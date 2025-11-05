@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# Simple Test Plan Generator Script
+# Usage: ./generate-testplan [document-file]
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+# Check if Java is installed
+if ! command -v java &> /dev/null; then
+    print_error "Java is not installed. Please install Java 11 or higher."
+    exit 1
+fi
+
+# Check if Maven is available for compilation
+if ! command -v mvn &> /dev/null; then
+    print_warning "Maven not found. Trying to use pre-compiled version..."
+    if [ ! -f "target/classes/com/testplan/cli/TestPlanCLI.class" ]; then
+        print_error "No compiled version found. Please install Maven and run: mvn compile"
+        exit 1
+    fi
+fi
+
+# Compile if needed
+if [ ! -f "target/classes/com/testplan/cli/TestPlanCLI.class" ] || [ "pom.xml" -nt "target/classes/com/testplan/cli/TestPlanCLI.class" ]; then
+    print_info "Compiling Test Plan Generator..."
+    mvn compile -q
+    print_success "Compilation complete"
+fi
+
+# Simple usage function
+show_usage() {
+    echo ""
+    echo "🚀 Test Plan Generator - Simple Usage"
+    echo ""
+    echo "Usage:"
+    echo "  ./generate-testplan                    # Interactive mode"
+    echo "  ./generate-testplan <document>         # Quick mode with document"
+    echo "  ./generate-testplan <document> <name>  # Quick mode with custom name"
+    echo ""
+    echo "Examples:"
+    echo "  ./generate-testplan requirements.pdf"
+    echo "  ./generate-testplan design.txt \"My Project\""
+    echo "  ./generate-testplan narrative.md"
+    echo ""
+    echo "Supported formats: .txt, .md, .pdf, narrative documents"
+    echo ""
+}
+
+# Quick mode - just provide document file
+if [ $# -eq 1 ]; then
+    DOCUMENT="$1"
+    
+    if [ ! -f "$DOCUMENT" ]; then
+        print_error "Document file not found: $DOCUMENT"
+        show_usage
+        exit 1
+    fi
+    
+    # Extract project name from filename
+    PROJECT_NAME=$(basename "$DOCUMENT" | sed 's/\.[^.]*$//' | sed 's/[-_]/ /g' | sed 's/\b\w/\U&/g')
+    OUTPUT_FILE="${PROJECT_NAME// /-}-TestPlan.pdf"
+    
+    print_info "Generating test plan for: $PROJECT_NAME"
+    print_info "Input document: $DOCUMENT"
+    print_info "Output file: $OUTPUT_FILE"
+    echo ""
+    
+    mvn exec:java -Dexec.mainClass="com.testplan.cli.TestPlanCLI" \
+        -Dexec.args="\"$PROJECT_NAME\" \"1.0\" \"$DOCUMENT\" \"\" \"$OUTPUT_FILE\"" -q
+    
+    if [ $? -eq 0 ]; then
+        print_success "Test plan generated successfully!"
+        print_info "Open $OUTPUT_FILE to view your professional test plan"
+    else
+        print_error "Failed to generate test plan"
+        exit 1
+    fi
+
+# Quick mode with custom project name
+elif [ $# -eq 2 ]; then
+    DOCUMENT="$1"
+    PROJECT_NAME="$2"
+    
+    if [ ! -f "$DOCUMENT" ]; then
+        print_error "Document file not found: $DOCUMENT"
+        show_usage
+        exit 1
+    fi
+    
+    OUTPUT_FILE="${PROJECT_NAME// /-}-TestPlan.pdf"
+    
+    print_info "Generating test plan for: $PROJECT_NAME"
+    print_info "Input document: $DOCUMENT"
+    print_info "Output file: $OUTPUT_FILE"
+    echo ""
+    
+    mvn exec:java -Dexec.mainClass="com.testplan.cli.TestPlanCLI" \
+        -Dexec.args="\"$PROJECT_NAME\" \"1.0\" \"$DOCUMENT\" \"\" \"$OUTPUT_FILE\"" -q
+    
+    if [ $? -eq 0 ]; then
+        print_success "Test plan generated successfully!"
+        print_info "Open $OUTPUT_FILE to view your professional test plan"
+    else
+        print_error "Failed to generate test plan"
+        exit 1
+    fi
+
+# Interactive mode
+elif [ $# -eq 0 ]; then
+    print_info "Starting interactive mode..."
+    mvn exec:java -Dexec.mainClass="com.testplan.cli.TestPlanCLI" -q
+
+# Show usage for invalid arguments
+else
+    print_error "Invalid number of arguments"
+    show_usage
+    exit 1
+fi
