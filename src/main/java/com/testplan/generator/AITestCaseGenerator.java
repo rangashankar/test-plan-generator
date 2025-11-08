@@ -56,54 +56,17 @@ public class AITestCaseGenerator {
                                      List<DesignComponent> components,
                                      String projectContext) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("You are a senior QA engineer and test architect with expertise in IEEE 829 standards and comprehensive test design. ");
-        prompt.append("Create detailed, professional test cases that ensure complete coverage and quality assurance.\n\n");
-        
-        prompt.append("TEST DESIGN PRINCIPLES:\n");
-        prompt.append("1. Create test cases that are specific, measurable, and executable\n");
-        prompt.append("2. Ensure comprehensive coverage of all requirements and user scenarios\n");
-        prompt.append("3. Include both positive (happy path) and negative (error) test cases\n");
-        prompt.append("4. Design tests that validate business logic, data integrity, and user experience\n");
-        prompt.append("5. Consider real-world usage patterns and edge cases\n");
-        prompt.append("6. Ensure tests are maintainable and provide clear pass/fail criteria\n\n");
-        
-        prompt.append("TEST CATEGORIES TO COVER:\n");
-        prompt.append("• FUNCTIONAL: Core business logic, user workflows, data processing\n");
-        prompt.append("• INTEGRATION: Component interactions, API calls, data flow between systems\n");
-        prompt.append("• BOUNDARY: Input validation, limits, edge cases, data boundaries\n");
-        prompt.append("• NEGATIVE: Error handling, invalid inputs, unauthorized access, failure scenarios\n");
-        prompt.append("• PERFORMANCE: Response times, load handling, resource usage, scalability\n");
-        prompt.append("• SECURITY: Authentication, authorization, data protection, input sanitization\n");
-        prompt.append("• USABILITY: User experience, accessibility, navigation, error messages\n");
-        prompt.append("• DATA: Data validation, integrity, backup/recovery, migration\n\n");
-        
-        prompt.append("PRIORITY GUIDELINES:\n");
-        prompt.append("• Critical: Core functionality, security, data integrity (must pass for release)\n");
-        prompt.append("• High: Primary user workflows, important business logic\n");
-        prompt.append("• Medium: Secondary features, edge cases, performance validation\n");
-        prompt.append("• Low: Nice-to-have features, cosmetic issues, minor enhancements\n\n");
-        
-        prompt.append("TEST CASE REQUIREMENTS:\n");
-        prompt.append("- Each test case must have a clear, specific objective\n");
-        prompt.append("- Test steps must be detailed enough for any tester to execute\n");
-        prompt.append("- Expected results must be specific and measurable\n");
-        prompt.append("- Include realistic test data and scenarios\n");
-        prompt.append("- Consider different user roles and permissions\n");
-        prompt.append("- Cover both success and failure paths\n");
-        prompt.append("- Ensure traceability to requirements and components\n\n");
-        
-        prompt.append("For each test case, provide:\n");
-        prompt.append("- Unique ID (TC-001, TC-002, etc.)\n");
-        prompt.append("- Clear, descriptive title (max 100 characters)\n");
-        prompt.append("- Detailed description explaining what is being tested and why\n");
-        prompt.append("- Test type from categories above\n");
-        prompt.append("- Priority (Critical/High/Medium/Low)\n");
-        prompt.append("- Preconditions (system state, data setup, user permissions)\n");
-        prompt.append("- Detailed test steps with specific actions and expected results\n");
-        prompt.append("- Overall expected result (what success looks like)\n");
-        prompt.append("- Related requirements and components for traceability\n\n");
-        
-        prompt.append("Return ONLY a valid JSON array with this exact structure:\n");
+        prompt.append("You are a senior QA architect. Produce IEEE 829 style manual test cases that are concise, executable, and cover the documented scope.\n\n");
+
+        prompt.append("Constraints:\n");
+        prompt.append("- Deliver 12-18 total test cases.\n");
+        prompt.append("- Aim for 1-2 focused cases per requirement (happy path + one negative/boundary). Only add more if the requirement is complex.\n");
+        prompt.append("- Include integration/interaction tests whenever components have dependencies, plus at least one security/privacy and one performance/resilience scenario.\n");
+        prompt.append("- Every test must cite related requirements/components for traceability.\n");
+        prompt.append("- Steps must be specific enough for a manual tester (4-8 steps each) with clear expected outcomes and data/role references.\n");
+        prompt.append("- Use priority levels Critical/High/Medium/Low to reflect business impact.\n\n");
+
+        prompt.append("Test case JSON schema:\n");
         prompt.append("[\n");
         prompt.append("  {\n");
         prompt.append("    \"id\": \"TC-001\",\n");
@@ -207,17 +170,14 @@ public class AITestCaseGenerator {
             prompt.append("=====================================\n\n");
         }
         
-        prompt.append("INSTRUCTIONS:\n");
-        prompt.append("1. Generate 15-25 comprehensive test cases covering all requirements and components\n");
-        prompt.append("2. Ensure each requirement has at least 2-3 test cases (positive, negative, edge case)\n");
-        prompt.append("3. Create integration tests for component interactions\n");
-        prompt.append("4. Include realistic test data and user scenarios\n");
-        prompt.append("5. Make test steps detailed enough for manual execution\n");
-        prompt.append("6. Ensure proper traceability to requirements and components\n");
-        prompt.append("7. Cover different user roles and permission levels\n");
-        prompt.append("8. Include both success and failure scenarios\n\n");
+        prompt.append("Execution checklist:\n");
+        prompt.append("1. Cover functional, integration, negative, boundary, and at least one security/performance scenario.\n");
+        prompt.append("2. Call out required data, user roles, or environmental preconditions explicitly.\n");
+        prompt.append("3. Use realistic but concise test data values (e.g., sample emails, IDs, payloads).\n");
+        prompt.append("4. Keep language actionable (\"Click\", \"Submit\", \"Verify ...\").\n");
+        prompt.append("5. Return ONLY the JSON array with no leading/trailing commentary.\n\n");
         
-        prompt.append("Generate comprehensive test cases now. Return ONLY the JSON array, no additional text.");
+        prompt.append("Generate the test cases now.");
         
         return prompt.toString();
     }

@@ -100,61 +100,30 @@ public class BedrockDocumentParser implements DocumentParser {
   private String buildRequirementsPrompt(String documentContent) {
     StringBuilder p = new StringBuilder();
 
-    p.append("You are a senior QA requirements engineer with expertise in IEEE 830 / ISO 29148 standards.\n");
-    p.append("Analyze the document below and extract ALL functional and non-functional requirements.\n\n");
+    p.append("You are a senior QA requirements engineer. Extract the smallest complete set of requirements that the document explicitly supports (cap at 40 items).\n\n");
 
-    p.append("CRITICAL INSTRUCTIONS:\n");
-    p.append("- Use ONLY requirement statements that are supported by the document.\n");
-    p.append("- If inference is required, set \"inferred\": true and include a brief justification in \"notes\".\n");
-    p.append("- Do NOT invent new requirements.\n");
-    p.append("- Output MUST be strictly valid JSON. No comments, no markdown, no extra text.\n");
-    p.append("- Requirements must be deduplicated and consolidated.\n");
-    p.append("- IDs must be sequential: REQ-001, REQ-002, …\n\n");
+    p.append("Guidelines:\n");
+    p.append("- Use only evidence from the document. When inferring, set \"inferred\": true and explain briefly in \"notes\".\n");
+    p.append("- Keep IDs sequential (REQ-001…). Deduplicate overlapping statements.\n");
+    p.append("- Priorities: Critical (system fails), High (core journeys), Medium (quality/reliability), Low (nice-to-have).\n");
+    p.append("- Categories: Functional, Performance, Security, Integration, UI/UX, Data, Operational.\n");
+    p.append("- Output must be valid JSON only—no prose, markdown, or comments.\n\n");
 
-    p.append("REQUIREMENT CATEGORIES:\n");
-    p.append("- Functional\n");
-    p.append("- Performance\n");
-    p.append("- Security\n");
-    p.append("- Integration\n");
-    p.append("- UI/UX\n");
-    p.append("- Data\n");
-    p.append("- Operational\n\n");
+    p.append("Return a JSON array where each object uses the following keys:\n");
+    p.append("{\n");
+    p.append("  \"id\": \"REQ-001\",\n");
+    p.append("  \"title\": \"<=80 char summary\",\n");
+    p.append("  \"description\": \"Full requirement statement with context\",\n");
+    p.append("  \"priority\": \"Critical|High|Medium|Low\",\n");
+    p.append("  \"category\": \"Functional|Performance|Security|Integration|UI/UX|Data|Operational\",\n");
+    p.append("  \"acceptanceCriteria\": [\"Specific, measurable, and testable clauses (2-4 entries)\"],\n");
+    p.append("  \"businessValue\": \"User or business impact\",\n");
+    p.append("  \"sourceEvidence\": [\"Quotes or section references\"],\n");
+    p.append("  \"inferred\": false,\n");
+    p.append("  \"notes\": \"Rationale when inferred or any assumptions\"\n");
+    p.append("}\n\n");
 
-    p.append("PRIORITY SCALE:\n");
-    p.append("- Critical: System fails without this\n");
-    p.append("- High: Required for core user journeys\n");
-    p.append("- Medium: Enhances reliability or usability\n");
-    p.append("- Low: Nice-to-have\n\n");
-
-    p.append("OUTPUT FORMAT:\n");
-    p.append("Return a JSON array. Each requirement object MUST match this schema:\n\n");
-    p.append("[\n");
-    p.append("  {\n");
-    p.append("    \"id\": \"REQ-001\",\n");
-    p.append("    \"title\": \"Concise requirement title (<= 80 chars)\",\n");
-    p.append("    \"description\": \"Detailed requirement statement, including context and purpose.\",\n");
-    p.append("    \"priority\": \"Critical | High | Medium | Low\",\n");
-    p.append("    \"category\": \"Functional | Security | Performance | Integration | UI/UX | Data | Operational\",\n");
-    p.append("    \"acceptanceCriteria\": [\n");
-    p.append("      \"Each acceptance criterion must be specific, measurable, and testable.\",\n");
-    p.append("      \"Must include expected behavior AND edge / error conditions.\",\n");
-    p.append("      \"Avoid vague terms (ex: fast, robust, user-friendly). Use numeric targets instead.\"\n");
-    p.append("    ],\n");
-    p.append("    \"businessValue\": \"Why this requirement matters for users or the organization.\",\n");
-    p.append("    \"sourceEvidence\": [\"Direct quotes or line references from the document\"],\n");
-    p.append("    \"inferred\": false,\n");
-    p.append("    \"notes\": \"Clarifications if inferred OR trade-offs or assumptions\"\n");
-    p.append("  }\n");
-    p.append("]\n\n");
-
-    p.append("EVIDENCE RULES:\n");
-    p.append("- For explicit requirements (\"must\", \"shall\", \"should\"), mark inferred=false.\n");
-    p.append("- For derived / implied requirements, set inferred=true and provide short rationale.\n");
-    p.append("- If a requirement cannot be supported or inferred, DO NOT include it.\n\n");
-
-    p.append("Now extract ALL requirements.\n");
-    p.append("Return ONLY the JSON array. Ensure valid JSON (no trailing commas).\n\n");
-
+    p.append("Return ONLY the JSON array (no trailing commas).\n\n");
     p.append("DOCUMENT TO ANALYZE:\n");
     p.append("=====================================\n");
     p.append(documentContent);
@@ -166,46 +135,34 @@ public class BedrockDocumentParser implements DocumentParser {
     
    private String buildDesignPrompt(String documentContent) {
     StringBuilder p = new StringBuilder();
-    p.append("You are a senior software architect... distributed systems.\n");
-    p.append("Analyze the document and extract ALL components present. Use ONLY evidence in the document; if inferred, set \"inferred\": true and explain in \"notes\".\n\n");
+    p.append("You are a software architect. Extract every distinct component mentioned in the document (max 150) using only supported evidence.\n\n");
+    p.append("Rules:\n");
+    p.append("- Stable IDs COMP-001..N ordered sequentially.\n");
+    p.append("- Types limited to: API, Service, UI, Database, Integration, Security, Infrastructure, External.\n");
+    p.append("- Dependencies must reference other component IDs; omit when unknown.\n");
+    p.append("- Output must be valid JSON only. No free-form text.\n\n");
 
-    p.append("RULES:\n");
-    p.append("- Output ONLY valid UTF-8 JSON (no markdown, no comments, no prose).\n");
-    p.append("- Max 200 components; dedupe synonyms; stable IDs COMP-001..N.\n");
-    p.append("- Dependencies must reference existing IDs; otherwise empty.\n");
-    p.append("- Do NOT invent endpoints/schemas not evidenced.\n");
-    p.append("- Order by id ascending.\n\n");
+    p.append("Each component object should contain:\n");
+    p.append("{\n");
+    p.append("  \"id\": \"COMP-001\",\n");
+    p.append("  \"name\": \"User Authentication Service\",\n");
+    p.append("  \"type\": \"API\",\n");
+    p.append("  \"description\": \"One-sentence summary of responsibility\",\n");
+    p.append("  \"interfaces\": [\"HTTPS POST /auth/login\", \"Kafka topic auth.events\"],\n");
+    p.append("  \"datastores\": [\"PostgreSQL user_db\"],\n");
+    p.append("  \"dependencies\": [\"COMP-003\"],\n");
+    p.append("  \"businessRules\": [\"Requires MFA for admin accounts\"],\n");
+    p.append("  \"nonFunctional\": \"Key SLA, throughput, or availability targets\",\n");
+    p.append("  \"security\": \"Notable auth/encryption constraints\",\n");
+    p.append("  \"evidence\": [\"Section or quote\"],\n");
+    p.append("  \"inferred\": false,\n");
+    p.append("  \"notes\": \"Short justification when inferred\"\n");
+    p.append("}\n\n");
 
-    p.append("TYPE ENUM: [API,Service,UI,Database,Integration,Security,Infrastructure,External]\n");
-    p.append("Normalize protocol/method (HTTPS/HTTP/gRPC/AMQP/Kafka/S3; GET/POST/PUT/PATCH/DELETE/STREAM).\n\n");
-
-    p.append("RETURN JSON ARRAY OF OBJECTS WITH THIS SHAPE:\n[\n  {\n");
-    p.append("    \"id\": \"COMP-001\",\n");
-    p.append("    \"name\": \"User Authentication Service\",\n");
-    p.append("    \"type\": \"API\",\n");
-    p.append("    \"description\": \"Microservice handling authentication and JWT issuance.\",\n");
-    p.append("    \"interfaces\": [\n");
-    p.append("      {\"direction\":\"exposes\",\"protocol\":\"HTTPS\",\"method\":\"POST\",\"path\":\"/auth/login\",\"requestSchemaRef\":\"AuthLoginRequest\",\"responseSchemaRef\":\"AuthLoginResponse\"}\n");
-    p.append("    ],\n");
-    p.append("    \"datastores\": [\n");
-    p.append("      {\"engine\":\"PostgreSQL\",\"name\":\"user_db\",\"tablesOrCollections\":[\"users\",\"sessions\"],\"primaryKeys\":[\"users.id\",\"sessions.id\"]}\n");
-    p.append("    ],\n");
-    p.append("    \"dependencies\": [\"COMP-003\"],\n");
-    p.append("    \"businessRules\": [\"MFA required for admins\"],\n");
-    p.append("    \"nonFunctional\": {\"sla\":\"p99 < 250ms\",\"availability\":\"99.9%\",\"rps\":500,\"burstRps\":2000},\n");
-    p.append("    \"security\": {\"authzModel\":\"RBAC\",\"token\":\"JWT\",\"encryptionAtRest\":true,\"encryptionInTransit\":true,\"dataClassification\":\"Confidential-PII\",\"pii\":[\"email\"]},\n");
-    p.append("    \"monitoring\": {\"logs\":[\"auth.login.success\"],\"metrics\":[\"rps\",\"latency.p99\",\"error_rate\"],\"alerts\":[\"elevated_login_failures\"]},\n");
-    p.append("    \"owners\": [\"team-auth-platform\"],\n");
-    p.append("    \"region\": [\"us-east-1\"],\n");
-    p.append("    \"evidence\": [\"Security > Auth\"],\n");
-    p.append("    \"notes\": \"\",\n");
-    p.append("    \"inferred\": false\n");
-    p.append("  }\n]\n\n");
-
+    p.append("Return ONLY the JSON array.\n\n");
     p.append("DOCUMENT TO ANALYZE:\n=====================================\n");
     p.append(documentContent);
-    p.append("\n=====================================\n\n");
-    p.append("Return ONLY the JSON array as specified. Ensure valid JSON.\n");
+    p.append("\n=====================================\n");
 
     return p.toString();
 }
