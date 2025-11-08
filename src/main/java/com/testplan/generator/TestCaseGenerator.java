@@ -6,6 +6,7 @@ import java.util.ArrayList;
 
 public class TestCaseGenerator {
     
+    private static final int MIN_INTEGRATION_TESTS = 3;
     private int testCaseCounter = 1;
     
     /**
@@ -25,9 +26,9 @@ public class TestCaseGenerator {
             testCases.addAll(generateIntegrationTestCases(component, components));
         }
         
-        // If no integration tests were generated, create some default ones
+        // Ensure we always have a baseline set of integration tests
         long integrationTestCount = testCases.stream().filter(tc -> "Integration".equals(tc.getTestType())).count();
-        if (integrationTestCount == 0) {
+        if (integrationTestCount < MIN_INTEGRATION_TESTS) {
             testCases.addAll(generateDefaultIntegrationTests());
         }
         
@@ -105,6 +106,12 @@ public class TestCaseGenerator {
                                                        List<DesignComponent> allComponents) {
         List<TestCase> testCases = new ArrayList<>();
         
+        if (component == null) {
+            return testCases;
+        }
+        
+        testCases.add(createComponentValidationTest(component));
+        
         // Generate integration tests for components with dependencies
         if (!component.getDependencies().isEmpty()) {
             TestCase integrationTest = createTestCase(
@@ -149,11 +156,6 @@ public class TestCaseGenerator {
             
             integrationTest.setExpectedResult("All integrations work correctly without errors");
             testCases.add(integrationTest);
-        }
-        
-        // Also generate integration tests for common system integrations even if no specific components are found
-        if (allComponents.isEmpty() || allComponents.size() < 3) {
-            testCases.addAll(generateDefaultIntegrationTests());
         }
         
         return testCases;
@@ -248,6 +250,67 @@ public class TestCaseGenerator {
         }
         
         return testCases;
+    }
+    
+    private TestCase createComponentValidationTest(DesignComponent component) {
+        String componentName = resolveComponentName(component);
+        TestCase componentTest = createTestCase(
+            "TC_" + String.format("%03d", testCaseCounter++),
+            componentName + " component validation",
+            "Validate that " + componentName + " behaves according to the design specification",
+            "Functional",
+            "Medium"
+        );
+        componentTest.setCategory("Component");
+        componentTest.getRelatedComponents().add(component.getId());
+        
+        int stepNumber = 1;
+        componentTest.getTestSteps().add(new TestStep(stepNumber++,
+            "Verify " + componentName + " is deployed and reachable in the test environment",
+            componentName + " responds to health checks or UI smoke tests"));
+        
+        if (!component.getInterfaces().isEmpty()) {
+            for (String iface : component.getInterfaces()) {
+                componentTest.getTestSteps().add(new TestStep(stepNumber++,
+                    "Exercise interface " + iface,
+                    iface + " returns expected responses and status codes"));
+            }
+        }
+        
+        if (!component.getDependencies().isEmpty()) {
+            for (String dependency : component.getDependencies()) {
+                componentTest.getTestSteps().add(new TestStep(stepNumber++,
+                    "Verify interaction between " + componentName + " and dependency " + dependency,
+                    dependency + " calls succeed and data contracts are honored"));
+            }
+        }
+        
+        if (!component.getBusinessRules().isEmpty()) {
+            for (String rule : component.getBusinessRules()) {
+                componentTest.getTestSteps().add(new TestStep(stepNumber++,
+                    "Validate business rule: " + rule,
+                    "Rule \"" + rule + "\" is enforced consistently"));
+            }
+        }
+        
+        componentTest.getTestSteps().add(new TestStep(stepNumber,
+            "Review monitoring/logging output for " + componentName,
+            "No errors or unexpected warnings are present"));
+        componentTest.setExpectedResult(componentName + " satisfies functional behavior, interfaces, dependencies, and business rules without defects.");
+        return componentTest;
+    }
+    
+    private String resolveComponentName(DesignComponent component) {
+        if (component == null) {
+            return "Component";
+        }
+        if (component.getName() != null && !component.getName().isEmpty()) {
+            return component.getName();
+        }
+        if (component.getId() != null && !component.getId().isEmpty()) {
+            return component.getId();
+        }
+        return "Component";
     }
     
     private List<TestCase> generateBoundaryTestCases(List<Requirement> requirements) {

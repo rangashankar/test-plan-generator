@@ -4,6 +4,7 @@ import com.testplan.model.*;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 
 public class TestPlanGenerator {
     
@@ -20,6 +21,17 @@ public class TestPlanGenerator {
                                    List<Requirement> requirements, 
                                    List<DesignComponent> components) {
         
+        List<Requirement> effectiveRequirements = requirements != null 
+            ? new ArrayList<>(requirements) 
+            : new ArrayList<>();
+        List<DesignComponent> effectiveComponents = components != null 
+            ? new ArrayList<>(components) 
+            : new ArrayList<>();
+        
+        if (effectiveRequirements.isEmpty() && !effectiveComponents.isEmpty()) {
+            effectiveRequirements.addAll(deriveRequirementsFromComponents(effectiveComponents));
+        }
+        
         TestPlan testPlan = new TestPlan();
         testPlan.setId("TP_" + projectName.replaceAll("\\s+", "_").toUpperCase());
         testPlan.setTitle("Test Plan for " + projectName);
@@ -28,22 +40,66 @@ public class TestPlanGenerator {
         testPlan.setCreatedBy("TestPlan Generator");
         
         // Set objectives
-        testPlan.setObjectives(generateObjectives(requirements, components));
+        testPlan.setObjectives(generateObjectives(effectiveRequirements, effectiveComponents));
         
         // Set scope
-        testPlan.setScope(generateScope(requirements, components));
+        testPlan.setScope(generateScope(effectiveRequirements, effectiveComponents));
+        testPlan.setTestItems(buildTestItems(effectiveRequirements, effectiveComponents));
         
         // Set out of scope
         testPlan.setOutOfScope(generateOutOfScope());
         
         // Generate test strategy
-        testPlan.setTestStrategy(generateTestStrategy(requirements, components));
+        testPlan.setTestStrategy(generateTestStrategy(effectiveRequirements, effectiveComponents));
         
         // Generate test cases
-        List<TestCase> testCases = testCaseGenerator.generateTestCases(requirements, components);
+        List<TestCase> testCases = testCaseGenerator.generateTestCases(effectiveRequirements, effectiveComponents);
         testPlan.setTestCases(testCases);
         
         return testPlan;
+    }
+    
+    /**
+     * Derive baseline requirements from design components when a dedicated requirement
+     * document is not available.
+     */
+    public List<Requirement> deriveRequirementsFromComponents(List<DesignComponent> components) {
+        List<Requirement> derived = new ArrayList<>();
+        if (components == null) {
+            return derived;
+        }
+        
+        int counter = 1;
+        for (DesignComponent component : components) {
+            Requirement requirement = new Requirement();
+            requirement.setId("DES-REQ-" + String.format("%03d", counter++));
+            String componentName = safeComponentName(component);
+            requirement.setTitle(componentName + " Capability");
+            
+            StringBuilder description = new StringBuilder();
+            if (component.getDescription() != null && !component.getDescription().isEmpty()) {
+                description.append(component.getDescription().trim());
+            } else {
+                description.append("Validate that ").append(componentName)
+                           .append(" performs its intended functionality.");
+            }
+            
+            if (!component.getInterfaces().isEmpty()) {
+                description.append(" Interfaces/APIs: ").append(String.join(", ", component.getInterfaces())).append(".");
+            }
+            if (!component.getDependencies().isEmpty()) {
+                description.append(" Dependencies: ").append(String.join(", ", component.getDependencies())).append(".");
+            }
+            requirement.setDescription(description.toString());
+            requirement.setPriority(deriveRequirementPriority(component.getType()));
+            requirement.setCategory(deriveRequirementCategory(component.getType()));
+            requirement.getAcceptanceCriteria().addAll(buildAcceptanceCriteriaFromComponent(component));
+            requirement.getDependencies().addAll(component.getDependencies());
+            
+            derived.add(requirement);
+        }
+        
+        return derived;
     }
     
     private List<String> generateObjectives(List<Requirement> requirements, 
@@ -67,14 +123,35 @@ public class TestPlanGenerator {
         return objectives;
     }
     
+    private List<String> buildTestItems(List<Requirement> requirements, List<DesignComponent> components) {
+        LinkedHashSet<String> items = new LinkedHashSet<>();
+        
+        if (requirements != null) {
+            for (Requirement requirement : requirements) {
+                if (requirement == null) continue;
+                String title = requirement.getTitle() != null ? requirement.getTitle() : requirement.getId();
+                items.add("Requirement: " + title);
+            }
+        }
+        
+        if (components != null) {
+            for (DesignComponent component : components) {
+                if (component == null) continue;
+                items.add("Component: " + safeComponentName(component));
+            }
+        }
+        
+        return new ArrayList<>(items);
+    }
+    
     private List<String> generateScope(List<Requirement> requirements, 
                                      List<DesignComponent> components) {
-        List<String> scope = new ArrayList<>();
+        LinkedHashSet<String> scope = new LinkedHashSet<>();
         
         // Add requirement categories to scope
         for (Requirement req : requirements) {
             String category = req.getCategory();
-            if (category != null && !scope.contains(category + " requirements")) {
+            if (category != null && !category.isEmpty()) {
                 scope.add(category + " requirements");
             }
         }
@@ -82,7 +159,7 @@ public class TestPlanGenerator {
         // Add component types to scope
         for (DesignComponent component : components) {
             String type = component.getType();
-            if (type != null && !scope.contains(type + " components")) {
+            if (type != null && !type.isEmpty()) {
                 scope.add(type + " components");
             }
         }
@@ -93,7 +170,7 @@ public class TestPlanGenerator {
         scope.add("System testing");
         scope.add("User acceptance testing");
         
-        return scope;
+        return new ArrayList<>(scope);
     }
     
     private List<String> generateOutOfScope() {
@@ -169,5 +246,77 @@ public class TestPlanGenerator {
                                  "and early stakeholder involvement.");
         
         return strategy;
+    }
+    
+    private String safeComponentName(DesignComponent component) {
+        if (component == null) {
+            return "Component";
+        }
+        if (component.getName() != null && !component.getName().isEmpty()) {
+            return component.getName();
+        }
+        if (component.getId() != null && !component.getId().isEmpty()) {
+            return component.getId();
+        }
+        return "Component";
+    }
+    
+    private String deriveRequirementPriority(String componentType) {
+        if (componentType == null) {
+            return "Medium";
+        }
+        String type = componentType.toLowerCase();
+        if (type.contains("api") || type.contains("service") || type.contains("integration")) {
+            return "High";
+        }
+        if (type.contains("database") || type.contains("data")) {
+            return "High";
+        }
+        if (type.contains("ui") || type.contains("interface")) {
+            return "Medium";
+        }
+        return "Medium";
+    }
+    
+    private String deriveRequirementCategory(String componentType) {
+        if (componentType == null) {
+            return "Functional";
+        }
+        String type = componentType.toLowerCase();
+        if (type.contains("api") || type.contains("integration")) {
+            return "Integration";
+        }
+        if (type.contains("database") || type.contains("data")) {
+            return "Data";
+        }
+        if (type.contains("ui") || type.contains("interface")) {
+            return "UI/UX";
+        }
+        return "Functional";
+    }
+    
+    private List<String> buildAcceptanceCriteriaFromComponent(DesignComponent component) {
+        List<String> criteria = new ArrayList<>();
+        String componentName = safeComponentName(component);
+        criteria.add(componentName + " executes its primary responsibilities without errors.");
+        
+        if (component != null) {
+            if (!component.getInterfaces().isEmpty()) {
+                criteria.add("Interfaces/APIs (" + String.join(", ", component.getInterfaces()) + 
+                             ") respond with correct data and status codes.");
+            }
+            
+            if (!component.getDependencies().isEmpty()) {
+                criteria.add("Dependencies (" + String.join(", ", component.getDependencies()) + 
+                             ") are invoked following contract expectations.");
+            }
+            
+            if (!component.getBusinessRules().isEmpty()) {
+                criteria.add("Business rules are enforced: " + String.join("; ", component.getBusinessRules()));
+            }
+        }
+        
+        criteria.add("Monitoring and logging exist for " + componentName + " critical paths.");
+        return criteria;
     }
 }

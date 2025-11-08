@@ -238,6 +238,12 @@ public class TestPlanCLI {
             }
         }
         
+        if (requirements.isEmpty() && !components.isEmpty()) {
+            System.out.println("   ℹ️  No explicit requirements detected. Deriving baseline requirements from design components...");
+            requirements = testPlanGenerator.deriveRequirementsFromComponents(components);
+            System.out.println("   📋 Derived " + requirements.size() + " requirements from design artifacts");
+        }
+        
         // Generate test plan
 
         TestPlan testPlan;
@@ -250,10 +256,11 @@ public class TestPlanCLI {
         System.out.println("   🧪 Generated " + testPlan.getTestCases().size() + " test cases");
         
         // Export test plan using PDF as default format
+        String normalizedOutput = outputFile.toLowerCase();
         TestPlanExporter exporter;
-        if (outputFile.endsWith(".xlsx")) {
+        if (normalizedOutput.endsWith(".xlsx")) {
             exporter = new StandardExcelExporter();
-        } else if (outputFile.endsWith(".txt")) {
+        } else if (normalizedOutput.endsWith(".txt")) {
             exporter = new SimpleTextExporter();
         } else {
             // Default to PDF format
