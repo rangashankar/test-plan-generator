@@ -137,6 +137,12 @@ To enable AI-powered document analysis and test case generation:
 - 🎯 **Comprehensive Coverage**: Identifies edge cases and scenarios
 - ⚡ **Advanced Test Cases**: Generates sophisticated test scenarios
 
+#### 🔁 Self-Healing AI Parsing
+- Automatic retry if the first AI response is empty or malformed
+- JSON validator cleans up occasional model formatting issues
+- Seamless fallback to the traditional parser when AI cannot extract data
+- Console logs (♻️ / ✅) explain when a retry or fallback occurs so you always know what happened
+
 ### � IEcEE 829 Standard Compliance
 
 The tool generates professional test documentation following industry standards:

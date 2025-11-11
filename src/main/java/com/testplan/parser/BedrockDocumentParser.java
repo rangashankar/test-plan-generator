@@ -26,6 +26,7 @@ public class BedrockDocumentParser implements DocumentParser {
     private BedrockRuntimeClient bedrockClient;
     private ObjectMapper objectMapper;
     private static final String MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0";
+    private static final int MAX_AI_RETRIES = 2;
     
     public BedrockDocumentParser() {
         this.bedrockClient = BedrockRuntimeClient.builder()
@@ -35,16 +36,42 @@ public class BedrockDocumentParser implements DocumentParser {
         this.objectMapper = new ObjectMapper();
     }
     
+    private String reinforceJsonReminder(String basePrompt) {
+        return basePrompt + "\n\nREMINDER: Previous response was invalid. Return ONLY a valid JSON array matching the schema. Do not include prose or explanations.";
+    }
+    private List<Requirement> parseRequirementsWithFallback(File file) {
+        try {
+            DocumentParser fallback = DocumentParserFactory.createParser(file, false);
+            return fallback.parseRequirements(file);
+        } catch (Exception fallbackError) {
+            System.err.println("   ❌ Fallback requirement parser failed: " + fallbackError.getMessage());
+            return new ArrayList<>();
+        }
+    }
+    
+    private List<DesignComponent> parseComponentsWithFallback(File file) {
+        try {
+            DocumentParser fallback = DocumentParserFactory.createParser(file, false);
+            return fallback.parseDesignComponents(file);
+        } catch (Exception fallbackError) {
+            System.err.println("   ❌ Fallback design parser failed: " + fallbackError.getMessage());
+            return new ArrayList<>();
+        }
+    }
+    
     @Override
     public List<Requirement> parseRequirements(File file) {
         try {
             String content = extractContent(file);
-            String prompt = buildRequirementsPrompt(content);
-            String response = invokeBedrockModel(prompt);
-            return parseRequirementsFromAIResponse(response);
+            List<Requirement> requirements = attemptRequirementExtraction(content);
+            if (requirements.isEmpty()) {
+                System.out.println("   ♻️  AI parser returned no requirements, falling back to traditional parser.");
+                return parseRequirementsWithFallback(file);
+            }
+            return requirements;
         } catch (Exception e) {
             System.err.println("Error parsing requirements with Bedrock: " + e.getMessage());
-            return new ArrayList<>();
+            return parseRequirementsWithFallback(file);
         }
     }
     
@@ -52,12 +79,15 @@ public class BedrockDocumentParser implements DocumentParser {
     public List<DesignComponent> parseDesignComponents(File file) {
         try {
             String content = extractContent(file);
-            String prompt = buildDesignPrompt(content);
-            String response = invokeBedrockModel(prompt);
-            return parseDesignComponentsFromAIResponse(response);
+            List<DesignComponent> components = attemptComponentExtraction(content);
+            if (components.isEmpty()) {
+                System.out.println("   ♻️  AI parser returned no design components, using fallback parser.");
+                return parseComponentsWithFallback(file);
+            }
+            return components;
         } catch (Exception e) {
             System.err.println("Error parsing design components with Bedrock: " + e.getMessage());
-            return new ArrayList<>();
+            return parseComponentsWithFallback(file);
         }
     }
     
@@ -95,6 +125,52 @@ public class BedrockDocumentParser implements DocumentParser {
                 new org.apache.pdfbox.text.PDFTextStripper();
             return stripper.getText(document);
         }
+    }
+    
+    private List<Requirement> attemptRequirementExtraction(String content) {
+        List<Requirement> requirements = new ArrayList<>();
+        String basePrompt = buildRequirementsPrompt(content);
+        
+        for (int attempt = 1; attempt <= MAX_AI_RETRIES; attempt++) {
+            String prompt = attempt == 1 ? basePrompt : reinforceJsonReminder(basePrompt);
+            try {
+                String response = invokeBedrockModel(prompt);
+                requirements = parseRequirementsFromAIResponse(response);
+                if (!requirements.isEmpty()) {
+                    if (attempt > 1) {
+                        System.out.println("   ✅ AI retry succeeded for requirements.");
+                    }
+                    return requirements;
+                }
+                System.out.println("   ⚠️  AI response contained no requirements (attempt " + attempt + ")");
+            } catch (Exception e) {
+                System.err.println("   ⚠️  AI requirement extraction attempt " + attempt + " failed: " + e.getMessage());
+            }
+        }
+        return new ArrayList<>();
+    }
+    
+    private List<DesignComponent> attemptComponentExtraction(String content) {
+        List<DesignComponent> components = new ArrayList<>();
+        String basePrompt = buildDesignPrompt(content);
+        
+        for (int attempt = 1; attempt <= MAX_AI_RETRIES; attempt++) {
+            String prompt = attempt == 1 ? basePrompt : reinforceJsonReminder(basePrompt);
+            try {
+                String response = invokeBedrockModel(prompt);
+                components = parseDesignComponentsFromAIResponse(response);
+                if (!components.isEmpty()) {
+                    if (attempt > 1) {
+                        System.out.println("   ✅ AI retry succeeded for design components.");
+                    }
+                    return components;
+                }
+                System.out.println("   ⚠️  AI response contained no design components (attempt " + attempt + ")");
+            } catch (Exception e) {
+                System.err.println("   ⚠️  AI component extraction attempt " + attempt + " failed: " + e.getMessage());
+            }
+        }
+        return new ArrayList<>();
     }
     
   private String buildRequirementsPrompt(String documentContent) {
@@ -189,19 +265,23 @@ public class BedrockDocumentParser implements DocumentParser {
         List<Requirement> requirements = new ArrayList<>();
         
         try {
-            // Extract JSON from AI response (it might have extra text)
-            String jsonPart = extractJsonFromResponse(aiResponse);
+            String jsonPart = extractJsonArray(aiResponse);
             JsonNode requirementsJson = objectMapper.readTree(jsonPart);
+            if (!requirementsJson.isArray()) {
+                return requirements;
+            }
             
             for (JsonNode reqNode : requirementsJson) {
+                if (!reqNode.hasNonNull("id") || !reqNode.hasNonNull("title")) {
+                    continue;
+                }
                 Requirement req = new Requirement();
                 req.setId(reqNode.get("id").asText());
                 req.setTitle(reqNode.get("title").asText());
-                req.setDescription(reqNode.get("description").asText());
-                req.setPriority(reqNode.get("priority").asText());
-                req.setCategory(reqNode.get("category").asText());
+                req.setDescription(reqNode.path("description").asText(""));
+                req.setPriority(reqNode.path("priority").asText("Medium"));
+                req.setCategory(reqNode.path("category").asText("Functional"));
                 
-                // Parse acceptance criteria
                 JsonNode criteriaNode = reqNode.get("acceptanceCriteria");
                 if (criteriaNode != null && criteriaNode.isArray()) {
                     for (JsonNode criterion : criteriaNode) {
@@ -222,17 +302,22 @@ public class BedrockDocumentParser implements DocumentParser {
         List<DesignComponent> components = new ArrayList<>();
         
         try {
-            String jsonPart = extractJsonFromResponse(aiResponse);
+            String jsonPart = extractJsonArray(aiResponse);
             JsonNode componentsJson = objectMapper.readTree(jsonPart);
+            if (!componentsJson.isArray()) {
+                return components;
+            }
             
             for (JsonNode compNode : componentsJson) {
+                if (!compNode.hasNonNull("id") || !compNode.hasNonNull("name")) {
+                    continue;
+                }
                 DesignComponent comp = new DesignComponent();
                 comp.setId(compNode.get("id").asText());
                 comp.setName(compNode.get("name").asText());
-                comp.setType(compNode.get("type").asText());
-                comp.setDescription(compNode.get("description").asText());
+                comp.setType(compNode.path("type").asText("Component"));
+                comp.setDescription(compNode.path("description").asText(""));
                 
-                // Parse interfaces
                 JsonNode interfacesNode = compNode.get("interfaces");
                 if (interfacesNode != null && interfacesNode.isArray()) {
                     for (JsonNode interfaceNode : interfacesNode) {
@@ -240,7 +325,6 @@ public class BedrockDocumentParser implements DocumentParser {
                     }
                 }
                 
-                // Parse dependencies
                 JsonNode dependenciesNode = compNode.get("dependencies");
                 if (dependenciesNode != null && dependenciesNode.isArray()) {
                     for (JsonNode depNode : dependenciesNode) {
@@ -248,7 +332,6 @@ public class BedrockDocumentParser implements DocumentParser {
                     }
                 }
                 
-                // Parse business rules
                 JsonNode rulesNode = compNode.get("businessRules");
                 if (rulesNode != null && rulesNode.isArray()) {
                     for (JsonNode ruleNode : rulesNode) {
@@ -265,16 +348,15 @@ public class BedrockDocumentParser implements DocumentParser {
         return components;
     }
     
-    private String extractJsonFromResponse(String response) {
-        // Find JSON array in the response
-        int startIndex = response.indexOf('[');
-        int endIndex = response.lastIndexOf(']') + 1;
-        
-        if (startIndex >= 0 && endIndex > startIndex) {
-            return response.substring(startIndex, endIndex);
+    private String extractJsonArray(String response) {
+        if (response == null) {
+            return "[]";
         }
-        
-        // If no array found, return empty array
+        int startIndex = response.indexOf('[');
+        int endIndex = response.lastIndexOf(']');
+        if (startIndex >= 0 && endIndex >= startIndex) {
+            return response.substring(startIndex, endIndex + 1);
+        }
         return "[]";
     }
     
