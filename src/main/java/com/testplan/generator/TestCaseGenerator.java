@@ -38,6 +38,40 @@ public class TestCaseGenerator {
         
         return testCases;
     }
+
+    /**
+     * Generate lightweight smoke tests to ensure at least minimal coverage when parsers return no cases.
+     */
+    public List<TestCase> generateSmokeTests(String projectName) {
+        List<TestCase> tests = new ArrayList<>();
+        String prefix = projectName != null && !projectName.isEmpty() ? projectName : "System";
+
+        tests.add(createTestCase(
+            "TC_" + String.format("%03d", testCaseCounter++),
+            prefix + " availability smoke",
+            "Verify the application is reachable and basic navigation works",
+            "Functional",
+            "High"
+        ));
+
+        tests.add(createTestCase(
+            "TC_" + String.format("%03d", testCaseCounter++),
+            prefix + " login/access smoke",
+            "Confirm authentication or access control enforces expected behavior",
+            "Functional",
+            "High"
+        ));
+
+        tests.add(createTestCase(
+            "TC_" + String.format("%03d", testCaseCounter++),
+            prefix + " error handling smoke",
+            "Validate the system responds gracefully to invalid input and surfaces errors",
+            "Negative",
+            "Medium"
+        ));
+
+        return tests;
+    }
     
     private List<TestCase> generateFunctionalTestCases(Requirement requirement) {
         List<TestCase> testCases = new ArrayList<>();
@@ -98,7 +132,7 @@ public class TestCaseGenerator {
         
         positiveTest.setExpectedResult("All acceptance criteria are met and requirement is satisfied");
         testCases.add(positiveTest);
-        
+
         return testCases;
     }
     
@@ -439,6 +473,9 @@ public class TestCaseGenerator {
         testCase.setTestType(testType);
         testCase.setPriority(priority);
         testCase.setCategory("Regression");
+        if (priority != null && priority.startsWith("REQ-NFR")) {
+            testCase.setCategory("Non-Functional");
+        }
         
         // Set standard fields following IEEE 829
         testCase.setObjective("Verify " + title.toLowerCase());

@@ -31,6 +31,10 @@ public class TestPlanGenerator {
         if (effectiveRequirements.isEmpty() && !effectiveComponents.isEmpty()) {
             effectiveRequirements.addAll(deriveRequirementsFromComponents(effectiveComponents));
         }
+
+        if (effectiveRequirements.isEmpty()) {
+            effectiveRequirements.addAll(baselineNonFunctionalRequirements());
+        }
         
         TestPlan testPlan = new TestPlan();
         testPlan.setId("TP_" + projectName.replaceAll("\\s+", "_").toUpperCase());
@@ -51,11 +55,15 @@ public class TestPlanGenerator {
         
         // Generate test strategy
         testPlan.setTestStrategy(generateTestStrategy(effectiveRequirements, effectiveComponents));
-        
+
         // Generate test cases
         List<TestCase> testCases = testCaseGenerator.generateTestCases(effectiveRequirements, effectiveComponents);
+        if (testCases.isEmpty()) {
+            testCases.addAll(testCaseGenerator.generateSmokeTests(projectName));
+        }
+        testCases = capTestCases(testCases, 400);
         testPlan.setTestCases(testCases);
-        
+
         return testPlan;
     }
     
@@ -246,6 +254,38 @@ public class TestPlanGenerator {
                                  "and early stakeholder involvement.");
         
         return strategy;
+    }
+
+    private List<Requirement> baselineNonFunctionalRequirements() {
+        List<Requirement> reqs = new ArrayList<>();
+        Requirement availability = new Requirement();
+        availability.setId("REQ-NFR-001");
+        availability.setTitle("System availability");
+        availability.setDescription("Service provides at least 99% availability during business hours.");
+        availability.setPriority("High");
+        availability.setCategory("Operational");
+        availability.getAcceptanceCriteria().add("Uptime meets 99% during defined hours");
+        availability.getAcceptanceCriteria().add("Incident response procedures are documented");
+        reqs.add(availability);
+
+        Requirement logging = new Requirement();
+        logging.setId("REQ-NFR-002");
+        logging.setTitle("Observability and logging");
+        logging.setDescription("Critical flows emit structured logs and health metrics to support troubleshooting.");
+        logging.setPriority("Medium");
+        logging.setCategory("Operational");
+        logging.getAcceptanceCriteria().add("Logs capture key actions and errors without sensitive data");
+        logging.getAcceptanceCriteria().add("Health endpoints expose readiness and liveness");
+        reqs.add(logging);
+
+        return reqs;
+    }
+
+    private List<TestCase> capTestCases(List<TestCase> testCases, int max) {
+        if (testCases == null || testCases.size() <= max) {
+            return testCases;
+        }
+        return new ArrayList<>(testCases.subList(0, max));
     }
     
     private String safeComponentName(DesignComponent component) {

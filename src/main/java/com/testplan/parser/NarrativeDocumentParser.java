@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
@@ -53,21 +54,19 @@ public class NarrativeDocumentParser implements DocumentParser {
      * Parse requirements from content string (used by PDF parser)
      */
     public List<Requirement> parseRequirementsFromContent(String content) {
-        List<Requirement> requirements = new ArrayList<>();
-        
-        // Extract requirements from key features section
-        List<Requirement> keyFeatureReqs = parseKeyFeatures(content);
-        requirements.addAll(keyFeatureReqs);
-        
-        // Extract requirements from Q&A sections
-        List<Requirement> qaReqs = parseQARequirements(content);
-        requirements.addAll(qaReqs);
-        
-        // Extract requirements from narrative text
-        List<Requirement> narrativeReqs = parseNarrativeRequirements(content);
-        requirements.addAll(narrativeReqs);
-        
-        return requirements;
+        LinkedHashMap<String, Requirement> deduped = new LinkedHashMap<>();
+
+        for (Requirement r : parseKeyFeatures(content)) {
+            addRequirement(deduped, r);
+        }
+        for (Requirement r : parseQARequirements(content)) {
+            addRequirement(deduped, r);
+        }
+        for (Requirement r : parseNarrativeRequirements(content)) {
+            addRequirement(deduped, r);
+        }
+
+        return new ArrayList<>(deduped.values());
     }
     
     @Override
@@ -88,15 +87,16 @@ public class NarrativeDocumentParser implements DocumentParser {
      * Parse design components from content string (used by PDF parser)
      */
     public List<DesignComponent> parseDesignComponentsFromContent(String content) {
-        List<DesignComponent> components = new ArrayList<>();
-        
-        // Extract design components from integration mentions
-        components.addAll(parseIntegrationComponents(content));
-        
-        // Extract components from technical descriptions in Q&A sections
-        components.addAll(parseTechnicalComponents(content));
-        
-        return components;
+        LinkedHashMap<String, DesignComponent> deduped = new LinkedHashMap<>();
+
+        for (DesignComponent c : parseIntegrationComponents(content)) {
+            addComponent(deduped, c);
+        }
+        for (DesignComponent c : parseTechnicalComponents(content)) {
+            addComponent(deduped, c);
+        }
+
+        return new ArrayList<>(deduped.values());
     }
     
     @Override
@@ -132,8 +132,8 @@ public class NarrativeDocumentParser implements DocumentParser {
                 
                 Requirement req = new Requirement();
                 req.setId("NAR-REQ-" + String.format("%03d", reqCounter++));
-                req.setTitle(featureName);
-                req.setDescription(featureDescription);
+                req.setTitle(normalizeLabel(featureName));
+                req.setDescription(normalizeLabel(featureDescription));
                 req.setPriority(determinePriority(featureName, featureDescription));
                 req.setCategory("Functional");
                 
@@ -158,8 +158,8 @@ public class NarrativeDocumentParser implements DocumentParser {
             
             Requirement req = new Requirement();
             req.setId("NAR-REQ-" + String.format("%03d", reqCounter++));
-            req.setTitle(extractFeatureTitle(featureText));
-            req.setDescription(featureText);
+            req.setTitle(normalizeLabel(extractFeatureTitle(featureText)));
+            req.setDescription(normalizeLabel(featureText));
             req.setPriority(determinePriority("", featureText));
             req.setCategory("Functional");
             
@@ -203,8 +203,8 @@ public class NarrativeDocumentParser implements DocumentParser {
             if (isSystemCapabilityQA(question, answer)) {
                 Requirement req = new Requirement();
                 req.setId("NAR-REQ-" + String.format("%03d", reqCounter++));
-                req.setTitle(extractCapabilityTitle(question));
-                req.setDescription(extractCapabilityDescription(answer));
+                req.setTitle(normalizeLabel(extractCapabilityTitle(question)));
+                req.setDescription(normalizeLabel(extractCapabilityDescription(answer)));
                 req.setPriority(determineQAPriority(question, answer));
                 req.setCategory(determineCategory(question, answer));
                 
@@ -236,8 +236,8 @@ public class NarrativeDocumentParser implements DocumentParser {
             
             Requirement req = new Requirement();
             req.setId("NAR-REQ-" + String.format("%03d", reqCounter++));
-            req.setTitle("Performance Requirement: " + metric);
-            req.setDescription("System must achieve " + percentage + "% " + metric + " " + context);
+            req.setTitle(normalizeLabel("Performance Requirement: " + metric));
+            req.setDescription(normalizeLabel("System must achieve " + percentage + "% " + metric + " " + context));
             req.setPriority("High");
             req.setCategory("Performance");
             
@@ -263,7 +263,7 @@ public class NarrativeDocumentParser implements DocumentParser {
             
             DesignComponent component = new DesignComponent();
             component.setId("NAR-COMP-" + String.format("%03d", compCounter++));
-            component.setName(integrationTarget + " Integration");
+            component.setName(normalizeLabel(integrationTarget + " Integration"));
             component.setType("Integration");
             component.setDescription("Integration component for connecting with " + integrationTarget);
             
@@ -292,7 +292,7 @@ public class NarrativeDocumentParser implements DocumentParser {
             if (shouldIncludeComponent(lowerContent, lowerComponentName)) {
                 DesignComponent component = new DesignComponent();
                 component.setId("NAR-COMP-" + String.format("%03d", compCounter++));
-                component.setName(componentName);
+                component.setName(normalizeLabel(componentName));
                 component.setType(getComponentType(componentName));
                 component.setDescription("System component for " + componentName.toLowerCase());
                 
@@ -512,10 +512,13 @@ public class NarrativeDocumentParser implements DocumentParser {
     }
     
     private String extractCapabilityDescription(String answer) {
-        // Take the first sentence or up to 200 characters
+        // Take the first meaningful sentence or up to 200 characters
         String[] sentences = answer.split("\\.");
-        if (sentences.length > 0 && sentences[0].length() < 200) {
-            return sentences[0].trim() + ".";
+        for (String s : sentences) {
+            String cand = s.trim();
+            if (cand.length() >= 8) {
+                return cand + ".";
+            }
         }
         return answer.length() > 200 ? answer.substring(0, 200) + "..." : answer;
     }
@@ -586,5 +589,35 @@ public class NarrativeDocumentParser implements DocumentParser {
     private String capitalizeFirst(String str) {
         if (str == null || str.isEmpty()) return str;
         return str.substring(0, 1).toUpperCase() + str.substring(1);
+    }
+
+    private String normalizeLabel(String text) {
+        if (text == null) return "";
+        String cleaned = text.trim()
+            .replaceAll("[\\u2013\\u2014]", "-")
+            .replaceAll("[:\\-\\s]+$", "")
+            .replaceAll("\\s+", " ");
+        return cleaned;
+    }
+
+    private String normalizeKey(String text) {
+        if (text == null) return "";
+        return normalizeLabel(text).toLowerCase().replaceAll("[^a-z0-9]+", "");
+    }
+
+    private void addRequirement(LinkedHashMap<String, Requirement> map, Requirement r) {
+        if (r == null) return;
+        String key = normalizeKey(r.getTitle() + "|" + r.getDescription());
+        if (!map.containsKey(key)) {
+            map.put(key, r);
+        }
+    }
+
+    private void addComponent(LinkedHashMap<String, DesignComponent> map, DesignComponent c) {
+        if (c == null) return;
+        String key = normalizeKey(c.getName() + "|" + c.getDescription());
+        if (!map.containsKey(key)) {
+            map.put(key, c);
+        }
     }
 }

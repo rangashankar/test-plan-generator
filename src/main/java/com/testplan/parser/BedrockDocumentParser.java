@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
 import software.amazon.awssdk.services.bedrockruntime.model.InvokeModelRequest;
@@ -13,9 +14,13 @@ import software.amazon.awssdk.services.bedrockruntime.model.InvokeModelResponse;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * AI-powered document parser using AWS Bedrock
@@ -27,6 +32,9 @@ public class BedrockDocumentParser implements DocumentParser {
     private ObjectMapper objectMapper;
     private static final String MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0";
     private static final int MAX_AI_RETRIES = 2;
+    private static final long BASE_BACKOFF_MS = 600;
+    private static final Map<String, List<Requirement>> REQUIREMENT_CACHE = new ConcurrentHashMap<>();
+    private static final Map<String, List<DesignComponent>> COMPONENT_CACHE = new ConcurrentHashMap<>();
     
     public BedrockDocumentParser() {
         this.bedrockClient = BedrockRuntimeClient.builder()
@@ -61,33 +69,66 @@ public class BedrockDocumentParser implements DocumentParser {
     
     @Override
     public List<Requirement> parseRequirements(File file) {
+        String cacheKey = cacheKeyFor(file);
+        if (REQUIREMENT_CACHE.containsKey(cacheKey)) {
+            System.out.println("   ♻️  Using cached AI requirements for " + file.getName());
+            return copyRequirements(REQUIREMENT_CACHE.get(cacheKey));
+        }
+
         try {
             String content = extractContent(file);
             List<Requirement> requirements = attemptRequirementExtraction(content);
             if (requirements.isEmpty()) {
                 System.out.println("   ♻️  AI parser returned no requirements, falling back to traditional parser.");
-                return parseRequirementsWithFallback(file);
+                List<Requirement> fallback = parseRequirementsWithFallback(file);
+                rememberFallback(file, fallback);
+                return fallback;
             }
-            return requirements;
+            // If AI succeeded but fallback can enrich, merge for completeness
+            List<Requirement> merged = mergeRequirements(requirements, parseRequirementsWithFallback(file));
+            REQUIREMENT_CACHE.put(cacheKey, copyRequirements(merged));
+            DocumentParserFactory.rememberSuccessfulParser(file, this);
+            return merged;
         } catch (Exception e) {
             System.err.println("Error parsing requirements with Bedrock: " + e.getMessage());
-            return parseRequirementsWithFallback(file);
+            if (isCredentialIssue(e)) {
+                System.err.println("   ⚠️  AI credentials unavailable or expired. Using non-AI parser for this run.");
+            }
+            List<Requirement> fallback = parseRequirementsWithFallback(file);
+            rememberFallback(file, fallback);
+            return fallback;
         }
     }
     
     @Override
     public List<DesignComponent> parseDesignComponents(File file) {
+        String cacheKey = cacheKeyFor(file);
+        if (COMPONENT_CACHE.containsKey(cacheKey)) {
+            System.out.println("   ♻️  Using cached AI design components for " + file.getName());
+            return copyComponents(COMPONENT_CACHE.get(cacheKey));
+        }
+
         try {
             String content = extractContent(file);
             List<DesignComponent> components = attemptComponentExtraction(content);
             if (components.isEmpty()) {
                 System.out.println("   ♻️  AI parser returned no design components, using fallback parser.");
-                return parseComponentsWithFallback(file);
+                List<DesignComponent> fallback = parseComponentsWithFallback(file);
+                rememberFallback(file, fallback);
+                return fallback;
             }
-            return components;
+            List<DesignComponent> merged = mergeComponents(components, parseComponentsWithFallback(file));
+            COMPONENT_CACHE.put(cacheKey, copyComponents(merged));
+            DocumentParserFactory.rememberSuccessfulParser(file, this);
+            return merged;
         } catch (Exception e) {
             System.err.println("Error parsing design components with Bedrock: " + e.getMessage());
-            return parseComponentsWithFallback(file);
+            if (isCredentialIssue(e)) {
+                System.err.println("   ⚠️  AI credentials unavailable or expired. Using non-AI parser for this run.");
+            }
+            List<DesignComponent> fallback = parseComponentsWithFallback(file);
+            rememberFallback(file, fallback);
+            return fallback;
         }
     }
     
@@ -146,6 +187,9 @@ public class BedrockDocumentParser implements DocumentParser {
             } catch (Exception e) {
                 System.err.println("   ⚠️  AI requirement extraction attempt " + attempt + " failed: " + e.getMessage());
             }
+
+            // Controlled backoff before retrying
+            sleepBeforeRetry(attempt);
         }
         return new ArrayList<>();
     }
@@ -169,6 +213,9 @@ public class BedrockDocumentParser implements DocumentParser {
             } catch (Exception e) {
                 System.err.println("   ⚠️  AI component extraction attempt " + attempt + " failed: " + e.getMessage());
             }
+
+            // Controlled backoff before retrying
+            sleepBeforeRetry(attempt);
         }
         return new ArrayList<>();
     }
@@ -263,9 +310,9 @@ public class BedrockDocumentParser implements DocumentParser {
     
     private List<Requirement> parseRequirementsFromAIResponse(String aiResponse) {
         List<Requirement> requirements = new ArrayList<>();
-        
+
         try {
-            String jsonPart = extractJsonArray(aiResponse);
+            String jsonPart = sanitizeToJsonArray(aiResponse);
             JsonNode requirementsJson = objectMapper.readTree(jsonPart);
             if (!requirementsJson.isArray()) {
                 return requirements;
@@ -300,9 +347,9 @@ public class BedrockDocumentParser implements DocumentParser {
     
     private List<DesignComponent> parseDesignComponentsFromAIResponse(String aiResponse) {
         List<DesignComponent> components = new ArrayList<>();
-        
+
         try {
-            String jsonPart = extractJsonArray(aiResponse);
+            String jsonPart = sanitizeToJsonArray(aiResponse);
             JsonNode componentsJson = objectMapper.readTree(jsonPart);
             if (!componentsJson.isArray()) {
                 return components;
@@ -348,16 +395,101 @@ public class BedrockDocumentParser implements DocumentParser {
         return components;
     }
     
-    private String extractJsonArray(String response) {
+    private String sanitizeToJsonArray(String response) {
         if (response == null) {
             return "[]";
         }
-        int startIndex = response.indexOf('[');
-        int endIndex = response.lastIndexOf(']');
-        if (startIndex >= 0 && endIndex >= startIndex) {
-            return response.substring(startIndex, endIndex + 1);
+
+        String cleaned = response
+            .replaceAll("^[^\\[]*", "") // drop leading prose
+            .replaceAll("[^\\]]*$", "") // drop trailing prose
+            .replaceAll(",\\s*]", "]") // remove trailing commas before closing array
+            .replaceAll("[\\u0000-\\u001F]", ""); // strip control characters
+
+        if (!cleaned.trim().startsWith("[")) {
+            return "[]";
         }
-        return "[]";
+        int endIndex = cleaned.lastIndexOf(']');
+        if (endIndex > 0) {
+            cleaned = cleaned.substring(0, endIndex + 1);
+        }
+        return cleaned.isEmpty() ? "[]" : cleaned;
+    }
+
+    private void rememberFallback(File file, List<?> results) {
+        if (results != null && !results.isEmpty()) {
+            DocumentParserFactory.rememberSuccessfulParser(file, DocumentParserFactory.createParser(file, false));
+        }
+    }
+
+    private List<Requirement> mergeRequirements(List<Requirement> primary, List<Requirement> secondary) {
+        Map<String, Requirement> merged = new java.util.LinkedHashMap<>();
+        for (Requirement req : primary) {
+            if (req != null && req.getId() != null) {
+                merged.put(req.getId(), req);
+            }
+        }
+        for (Requirement req : secondary) {
+            if (req != null && req.getId() != null && !merged.containsKey(req.getId())) {
+                merged.put(req.getId(), req);
+            }
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private List<DesignComponent> mergeComponents(List<DesignComponent> primary, List<DesignComponent> secondary) {
+        Map<String, DesignComponent> merged = new java.util.LinkedHashMap<>();
+        for (DesignComponent comp : primary) {
+            if (comp != null && comp.getId() != null) {
+                merged.put(comp.getId(), comp);
+            }
+        }
+        for (DesignComponent comp : secondary) {
+            if (comp != null && comp.getId() != null && !merged.containsKey(comp.getId())) {
+                merged.put(comp.getId(), comp);
+            }
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private boolean isCredentialIssue(Exception e) {
+        if (e instanceof SdkClientException) {
+            return true;
+        }
+        String msg = e.getMessage();
+        return msg != null && msg.toLowerCase().contains("credential");
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        long backoff = (long) (BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
+        try {
+            Thread.sleep(backoff);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private String cacheKeyFor(File file) {
+        try {
+            byte[] data = Files.readAllBytes(file.toPath());
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(data);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return file.getAbsolutePath();
+        }
+    }
+
+    private List<Requirement> copyRequirements(List<Requirement> source) {
+        return new ArrayList<>(source);
+    }
+
+    private List<DesignComponent> copyComponents(List<DesignComponent> source) {
+        return new ArrayList<>(source);
     }
     
     /**

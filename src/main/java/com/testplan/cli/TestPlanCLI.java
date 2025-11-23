@@ -5,6 +5,13 @@ import com.testplan.parser.*;
 import com.testplan.generator.*;
 import com.testplan.exporter.*;
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Formatter;
 import java.util.List;
 import java.util.Scanner;
 
@@ -61,7 +68,7 @@ public class TestPlanCLI {
                                               generateDefaultOutputName(projectName, outputFormat));
             
             // Generate test plan
-            generateTestPlan(projectName, version, inputFile, designFile, outputFile);
+            generateTestPlan(projectName, version, inputFile, designFile, outputFile, false);
             
         } catch (Exception e) {
             System.err.println("\n❌ Error: " + e.getMessage());
@@ -72,16 +79,26 @@ public class TestPlanCLI {
     }
     
     public void runNonInteractive(String[] args) {
-        if (args.length < 3) {
+        boolean validateOnly = false;
+        List<String> filtered = new ArrayList<>();
+        for (String arg : args) {
+            if ("--validate-only".equalsIgnoreCase(arg) || "--validate".equalsIgnoreCase(arg) || "-V".equalsIgnoreCase(arg)) {
+                validateOnly = true;
+            } else {
+                filtered.add(arg);
+            }
+        }
+
+        if (filtered.size() < 3) {
             printUsage();
             System.exit(1);
         }
         
-        String projectName = args[0];
-        String version = args[1];
-        String inputFile = args[2];
-        String designFile = args.length > 3 && !args[3].trim().isEmpty() ? args[3] : "";
-        String outputFile = args.length > 4 ? args[4] : generateDefaultOutputName(projectName, "pdf");
+        String projectName = filtered.get(0);
+        String version = filtered.get(1);
+        String inputFile = filtered.get(2);
+        String designFile = filtered.size() > 3 && !filtered.get(3).trim().isEmpty() ? filtered.get(3) : "";
+        String outputFile = filtered.size() > 4 ? filtered.get(4) : generateDefaultOutputName(projectName, "pdf");
         
         System.out.println("🚀 Test Plan Generator");
         System.out.println("   Project: " + projectName);
@@ -90,11 +107,15 @@ public class TestPlanCLI {
         if (!designFile.isEmpty()) {
             System.out.println("   Design: " + designFile);
         }
-        System.out.println("   Output: " + outputFile);
+        if (!validateOnly) {
+            System.out.println("   Output: " + outputFile);
+        } else {
+            System.out.println("   Mode: validation only (no export)");
+        }
         System.out.println();
         
         try {
-            generateTestPlan(projectName, version, inputFile, designFile, outputFile);
+            generateTestPlan(projectName, version, inputFile, designFile, outputFile, validateOnly);
         } catch (Exception e) {
             System.err.println("❌ Error: " + e.getMessage());
             System.exit(1);
@@ -118,6 +139,7 @@ public class TestPlanCLI {
     
     private void printUsage() {
         System.out.println("Usage: java TestPlanCLI <project-name> <version> <input-file> [design-file] [output-file]");
+        System.out.println("   Add --validate-only to run parsing/generation health checks without exporting.");
         System.out.println();
         System.out.println("Examples:");
         System.out.println("  java TestPlanCLI \"My Project\" \"1.0\" requirements.txt");
@@ -202,7 +224,7 @@ public class TestPlanCLI {
     }
     
     private void generateTestPlan(String projectName, String version, String inputFile, 
-                                String designFile, String outputFile) throws Exception {
+                                String designFile, String outputFile, boolean validateOnly) throws Exception {
         
         System.out.println("\n🔄 Generating test plan...");
         
@@ -255,23 +277,81 @@ public class TestPlanCLI {
         }
         System.out.println("   🧪 Generated " + testPlan.getTestCases().size() + " test cases");
         
-        // Export test plan using PDF as default format
-        String normalizedOutput = outputFile.toLowerCase();
-        TestPlanExporter exporter;
-        if (normalizedOutput.endsWith(".xlsx")) {
-            exporter = new StandardExcelExporter();
-        } else if (normalizedOutput.endsWith(".txt")) {
-            exporter = new SimpleTextExporter();
-        } else {
-            // Default to PDF format
-            exporter = new PDFTestPlanExporter();
+        if (validateOnly) {
+            printValidationSummary(testPlan);
+            return;
         }
-        
-        File output = new File(outputFile);
-        exporter.export(testPlan, output);
+
+        String finalOutput = safeExport(testPlan, outputFile);
+        writeManifest(testPlan, finalOutput);
         
         // Print success summary
-        printSuccessSummary(testPlan, outputFile);
+        printSuccessSummary(testPlan, finalOutput);
+    }
+
+    private String safeExport(TestPlan testPlan, String outputFile) throws Exception {
+        String normalizedOutput = outputFile.toLowerCase();
+        TestPlanExporter primary;
+        TestPlanExporter fallback;
+        TestPlanExporter lastResort = new SimpleTextExporter();
+
+        if (normalizedOutput.endsWith(".xlsx")) {
+            primary = new StandardExcelExporter();
+            fallback = new PDFTestPlanExporter();
+        } else if (normalizedOutput.endsWith(".txt")) {
+            primary = new SimpleTextExporter();
+            fallback = new StandardExcelExporter();
+        } else {
+            primary = new PDFTestPlanExporter();
+            fallback = new StandardExcelExporter();
+        }
+
+        File output = new File(outputFile);
+        ensureWritable(output);
+
+        try {
+            primary.export(testPlan, output);
+            return output.getPath();
+        } catch (Exception primaryError) {
+            cleanupPartial(output);
+            System.err.println("   ⚠️  Primary export failed (" + primary.getClass().getSimpleName() + "): " + primaryError.getMessage());
+            try {
+                File fallbackFile = tweakExtension(outputFile, fallback.getFileExtension());
+                fallback.export(testPlan, fallbackFile);
+                System.out.println("   ♻️  Fallback export succeeded: " + fallbackFile.getName());
+                return fallbackFile.getPath();
+            } catch (Exception fallbackError) {
+                cleanupPartial(output);
+                File lastFile = tweakExtension(outputFile, lastResort.getFileExtension());
+                lastResort.export(testPlan, lastFile);
+                System.out.println("   ♻️  Last-resort text export succeeded: " + lastFile.getName());
+                return lastFile.getPath();
+            }
+        }
+    }
+
+    private void ensureWritable(File output) throws IOException {
+        File parent = output.getAbsoluteFile().getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("Unable to create output directory: " + parent);
+        }
+        if (parent != null && !parent.canWrite()) {
+            throw new IOException("Output directory not writable: " + parent);
+        }
+    }
+
+    private void cleanupPartial(File file) {
+        if (file != null && file.exists()) {
+            if (!file.delete()) {
+                System.err.println("   ⚠️  Could not remove partial file: " + file.getName());
+            }
+        }
+    }
+
+    private File tweakExtension(String original, String newExt) {
+        int dot = original.lastIndexOf('.');
+        String base = dot > 0 ? original.substring(0, dot) : original;
+        return new File(base + "." + newExt);
     }
     
     private void printSuccessSummary(TestPlan testPlan, String outputFile) {
@@ -309,6 +389,14 @@ public class TestPlanCLI {
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
         System.out.println("\n🎉 Ready to use! Open " + outputFile + " to view your test plan.");
     }
+
+    private void printValidationSummary(TestPlan testPlan) {
+        System.out.println("\n✅ Validation complete (no export requested)");
+        System.out.println("   Requirements: " + testPlan.getTestItems().size());
+        System.out.println("   Test Cases: " + testPlan.getTestCases().size());
+        long aiGenerated = testPlan.getTestCases().stream().filter(tc -> tc.getId() != null && tc.getId().contains("TC_")).count();
+        System.out.println("   Cases generated: " + aiGenerated);
+    }
     
     private boolean isAIAvailable() {
         try {
@@ -341,5 +429,38 @@ public class TestPlanCLI {
         }
         
         return useAI;
+    }
+
+    private void writeManifest(TestPlan testPlan, String outputPath) {
+        try {
+            Path output = Path.of(outputPath);
+            if (!Files.exists(output)) {
+                return;
+            }
+            String checksum = computeSha256(output);
+            long size = Files.size(output);
+            String manifestName = outputPath + ".manifest.txt";
+            StringBuilder sb = new StringBuilder();
+            sb.append("file: ").append(output.getFileName()).append('\n');
+            sb.append("size_bytes: ").append(size).append('\n');
+            sb.append("sha256: ").append(checksum).append('\n');
+            sb.append("test_cases: ").append(testPlan.getTestCases().size()).append('\n');
+            Files.writeString(Path.of(manifestName), sb.toString(), StandardCharsets.UTF_8);
+            System.out.println("   🧾 Manifest created: " + manifestName);
+        } catch (Exception e) {
+            System.err.println("   ⚠️  Could not write manifest: " + e.getMessage());
+        }
+    }
+
+    private String computeSha256(Path file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] data = Files.readAllBytes(file);
+        byte[] hash = digest.digest(data);
+        try (Formatter formatter = new Formatter()) {
+            for (byte b : hash) {
+                formatter.format("%02x", b);
+            }
+            return formatter.toString();
+        }
     }
 }

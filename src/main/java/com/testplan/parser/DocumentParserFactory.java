@@ -3,11 +3,14 @@ package com.testplan.parser;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Factory class to create the appropriate document parser based on file content and name
  */
 public class DocumentParserFactory {
+    private static final Map<String, Class<? extends DocumentParser>> LAST_GOOD = new ConcurrentHashMap<>();
     
     /**
      * Creates the appropriate parser for the given file
@@ -27,6 +30,11 @@ public class DocumentParserFactory {
     public static DocumentParser createParser(File file, boolean useAI) {
         if (file == null || !file.exists()) {
             return new TextDocumentParser(); // Default fallback
+        }
+
+        DocumentParser remembered = getRememberedParser(file);
+        if (remembered != null && (!useAI || !(remembered instanceof BedrockDocumentParser))) {
+            return remembered;
         }
         
         // If AI is requested and cloud AI credentials are available, use AI parser
@@ -61,6 +69,31 @@ public class DocumentParserFactory {
         
         // Default to structured text parser
         return new TextDocumentParser();
+    }
+
+    public static void rememberSuccessfulParser(File file, DocumentParser parser) {
+        if (file == null || parser == null) {
+            return;
+        }
+        LAST_GOOD.put(parserKey(file), parser.getClass());
+    }
+
+    private static DocumentParser getRememberedParser(File file) {
+        Class<? extends DocumentParser> clazz = LAST_GOOD.get(parserKey(file));
+        if (clazz == null) {
+            return null;
+        }
+        try {
+            return clazz.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String parserKey(File file) {
+        String name = file.getName().toLowerCase();
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot) : name;
     }
     
     /**
