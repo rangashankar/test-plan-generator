@@ -15,6 +15,12 @@ import java.util.Formatter;
 import java.util.List;
 import java.util.Scanner;
 
+import com.testplan.publisher.PublishConfig;
+import com.testplan.publisher.PublishResult;
+import com.testplan.publisher.PublishTarget;
+import com.testplan.publisher.PublisherFactory;
+import com.testplan.publisher.TestManagementPublisher;
+
 /**
  * Command Line Interface for the Test Plan Generator
  * Provides an interactive experience for generating test plans
@@ -66,9 +72,11 @@ public class TestPlanCLI {
             String outputFormat = promptForOutputFormat();
             String outputFile = promptForOutput("Enter output file name", 
                                               generateDefaultOutputName(projectName, outputFormat));
+
+            PublishConfig publishConfig = promptForPublishConfig();
             
             // Generate test plan
-            generateTestPlan(projectName, version, inputFile, designFile, outputFile, false);
+            generateTestPlan(projectName, version, inputFile, designFile, outputFile, false, publishConfig);
             
         } catch (Exception e) {
             System.err.println("\n❌ Error: " + e.getMessage());
@@ -80,25 +88,79 @@ public class TestPlanCLI {
     
     public void runNonInteractive(String[] args) {
         boolean validateOnly = false;
-        List<String> filtered = new ArrayList<>();
-        for (String arg : args) {
+        PublishConfig.Builder publishBuilder = new PublishConfig.Builder();
+        List<String> positional = new ArrayList<>();
+
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
             if ("--validate-only".equalsIgnoreCase(arg) || "--validate".equalsIgnoreCase(arg) || "-V".equalsIgnoreCase(arg)) {
                 validateOnly = true;
-            } else {
-                filtered.add(arg);
+                continue;
             }
+            if (arg.startsWith("--publish=")) {
+                publishBuilder.target(PublishTarget.fromString(arg.substring("--publish=".length())));
+                continue;
+            }
+            if ("--publish".equalsIgnoreCase(arg) && i + 1 < args.length) {
+                publishBuilder.target(PublishTarget.fromString(args[++i]));
+                continue;
+            }
+            if (arg.startsWith("--publish-url=")) {
+                publishBuilder.baseUrl(arg.substring("--publish-url=".length()));
+                continue;
+            }
+            if ("--publish-url".equalsIgnoreCase(arg) && i + 1 < args.length) {
+                publishBuilder.baseUrl(args[++i]);
+                continue;
+            }
+            if (arg.startsWith("--publish-project=")) {
+                publishBuilder.projectKey(arg.substring("--publish-project=".length()));
+                continue;
+            }
+            if ("--publish-project".equalsIgnoreCase(arg) && i + 1 < args.length) {
+                publishBuilder.projectKey(args[++i]);
+                continue;
+            }
+            if (arg.startsWith("--publish-token=")) {
+                publishBuilder.apiToken(arg.substring("--publish-token=".length()));
+                continue;
+            }
+            if ("--publish-token".equalsIgnoreCase(arg) && i + 1 < args.length) {
+                publishBuilder.apiToken(args[++i]);
+                continue;
+            }
+            if (arg.startsWith("--publish-run=")) {
+                publishBuilder.testRunName(arg.substring("--publish-run=".length()));
+                continue;
+            }
+            if ("--publish-run".equalsIgnoreCase(arg) && i + 1 < args.length) {
+                publishBuilder.testRunName(args[++i]);
+                continue;
+            }
+            if ("--publish-live".equalsIgnoreCase(arg)) {
+                publishBuilder.dryRun(false);
+                continue;
+            }
+            if ("--publish-dry-run".equalsIgnoreCase(arg)) {
+                publishBuilder.dryRun(true);
+                continue;
+            }
+
+            positional.add(arg);
         }
 
-        if (filtered.size() < 3) {
+        if (positional.size() < 3) {
             printUsage();
             System.exit(1);
         }
         
-        String projectName = filtered.get(0);
-        String version = filtered.get(1);
-        String inputFile = filtered.get(2);
-        String designFile = filtered.size() > 3 && !filtered.get(3).trim().isEmpty() ? filtered.get(3) : "";
-        String outputFile = filtered.size() > 4 ? filtered.get(4) : generateDefaultOutputName(projectName, "pdf");
+        String projectName = positional.get(0);
+        String version = positional.get(1);
+        String inputFile = positional.get(2);
+        String designFile = positional.size() > 3 && !positional.get(3).trim().isEmpty() ? positional.get(3) : "";
+        String outputFile = positional.size() > 4 ? positional.get(4) : generateDefaultOutputName(projectName, "pdf");
+
+        PublishConfig publishConfig = publishBuilder.build();
         
         System.out.println("🚀 Test Plan Generator");
         System.out.println("   Project: " + projectName);
@@ -112,10 +174,13 @@ public class TestPlanCLI {
         } else {
             System.out.println("   Mode: validation only (no export)");
         }
+        if (publishConfig.getTarget() != null) {
+            System.out.println("   Publish: " + publishConfig.getTarget() + (publishConfig.isDryRun() ? " (dry-run)" : ""));
+        }
         System.out.println();
         
         try {
-            generateTestPlan(projectName, version, inputFile, designFile, outputFile, validateOnly);
+            generateTestPlan(projectName, version, inputFile, designFile, outputFile, validateOnly, publishConfig);
         } catch (Exception e) {
             System.err.println("❌ Error: " + e.getMessage());
             System.exit(1);
@@ -140,10 +205,18 @@ public class TestPlanCLI {
     private void printUsage() {
         System.out.println("Usage: java TestPlanCLI <project-name> <version> <input-file> [design-file] [output-file]");
         System.out.println("   Add --validate-only to run parsing/generation health checks without exporting.");
+        System.out.println("   Optional publish flags:");
+        System.out.println("     --publish <jira|xray|testrail>  Target test management tool (dry-run default)");
+        System.out.println("     --publish-url <url>             API base URL (import endpoint)");
+        System.out.println("     --publish-project <key>         Project key/ID");
+        System.out.println("     --publish-token <token>         API token (Bearer)");
+        System.out.println("     --publish-run <name>            Test run/execution name");
+        System.out.println("     --publish-live                  Send to API (otherwise dry-run)");
+        System.out.println("     --publish-dry-run               Force dry-run payload only");
         System.out.println();
         System.out.println("Examples:");
         System.out.println("  java TestPlanCLI \"My Project\" \"1.0\" requirements.txt");
-        System.out.println("  java TestPlanCLI \"Smart Cart\" \"2.0\" prfaq.txt \"\" output.xlsx");
+        System.out.println("  java TestPlanCLI \"Smart Cart\" \"2.0\" prfaq.txt \"\" output.xlsx --publish jira --publish-url https://xray.example/api/import --publish-project CART");
         System.out.println();
         System.out.println("Or run without arguments for interactive mode.");
     }
@@ -215,6 +288,40 @@ public class TestPlanCLI {
     private String promptForOutput(String prompt, String defaultValue) {
         return promptForInput(prompt, defaultValue);
     }
+
+    private PublishConfig promptForPublishConfig() {
+        System.out.print("📤 Publish to Jira/Xray or TestRail? [y/N]: ");
+        String choice = scanner.nextLine().trim().toLowerCase();
+        if (!"y".equals(choice) && !"yes".equals(choice)) {
+            return new PublishConfig.Builder().build();
+        }
+
+        System.out.println("   Choose target: 1) Jira/Xray  2) TestRail");
+        System.out.print("   Enter choice [1]: ");
+        String targetChoice = scanner.nextLine().trim();
+        PublishTarget target = "2".equals(targetChoice) ? PublishTarget.TESTRAIL : PublishTarget.JIRA_XRAY;
+
+        String baseUrl = promptForInput("Enter API base URL (full endpoint for import)", "");
+        String projectKey = promptForInput("Enter project key/ID", "");
+        String token = promptForInput("Enter API token (stored locally)", "");
+        String runName = promptForInput("Enter test run name", "Automated Test Run");
+
+        boolean dryRun = true;
+        System.out.print("   Perform dry-run only? [Y/n]: ");
+        String dry = scanner.nextLine().trim().toLowerCase();
+        if ("n".equals(dry) || "no".equals(dry)) {
+            dryRun = false;
+        }
+
+        return new PublishConfig.Builder()
+                .target(target)
+                .baseUrl(baseUrl)
+                .projectKey(projectKey)
+                .apiToken(token)
+                .testRunName(runName)
+                .dryRun(dryRun)
+                .build();
+    }
     
     private String generateDefaultOutputName(String projectName, String format) {
         String safeName = projectName.toLowerCase()
@@ -224,7 +331,8 @@ public class TestPlanCLI {
     }
     
     private void generateTestPlan(String projectName, String version, String inputFile, 
-                                String designFile, String outputFile, boolean validateOnly) throws Exception {
+                                String designFile, String outputFile, boolean validateOnly,
+                                PublishConfig publishConfig) throws Exception {
         
         System.out.println("\n🔄 Generating test plan...");
         
@@ -284,6 +392,7 @@ public class TestPlanCLI {
 
         String finalOutput = safeExport(testPlan, outputFile);
         writeManifest(testPlan, finalOutput);
+        publishIfRequested(testPlan, publishConfig, finalOutput);
         
         // Print success summary
         printSuccessSummary(testPlan, finalOutput);
@@ -354,6 +463,38 @@ public class TestPlanCLI {
         return new File(base + "." + newExt);
     }
     
+    private void publishIfRequested(TestPlan testPlan, PublishConfig publishConfig, String outputPath) {
+        if (publishConfig == null || publishConfig.getTarget() == null) {
+            return;
+        }
+        try {
+            PublishConfig effective = publishConfig;
+            if (outputPath != null) {
+                effective = new PublishConfig.Builder(publishConfig).exportPath(outputPath).build();
+            }
+            TestManagementPublisher publisher = PublisherFactory.create(effective.getTarget());
+            if (publisher == null) {
+                System.err.println("   ⚠️  No publisher available for target: " + effective.getTarget());
+                return;
+            }
+            PublishResult result = publisher.publish(testPlan, effective);
+            String prefix = result.isSuccess() ? "   📤 " : "   ⚠️  ";
+            System.out.println(prefix + publisher.getName() + ": " + result.getMessage());
+            if (!result.getCreatedItems().isEmpty()) {
+                for (String item : result.getCreatedItems()) {
+                    System.out.println("      • " + item);
+                }
+            }
+            if (!result.getWarnings().isEmpty()) {
+                for (String warning : result.getWarnings()) {
+                    System.out.println("      ⚠️  " + warning);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("   ⚠️  Publish failed: " + e.getMessage());
+        }
+    }
+
     private void printSuccessSummary(TestPlan testPlan, String outputFile) {
         System.out.println("\n✅ Test Plan Generated Successfully!");
         System.out.println("╔══════════════════════════════════════════════════════════════╗");

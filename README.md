@@ -19,6 +19,9 @@ A Java-based application that automatically generates comprehensive test plans a
   - Converts FAQ answers into testable requirements
   - Identifies performance metrics and accuracy requirements
   - Generates test cases for system capabilities
+- **Test Management Connectors (dry-run first)**:
+  - Prepare/push payloads for Jira/Xray or TestRail
+  - Safe dry-run mode writes payloads to `target/publish/` for review
 - **📋 IEEE 829 Standard Test Plans**: Generates professional test plans with:
   - **Complete IEEE 829 compliance** (Test Plan Identifier, Introduction, Test Items, etc.)
   - **Standardized test case format** (ID, Objective, Priority, Severity, Steps, etc.)
@@ -92,6 +95,8 @@ mvn compile  # Just once
 ./testplan "Project" "1.0" requirements.txt design.pdf output.pdf
 ./testplan "Project" "1.0" requirements.txt "" output.xlsx  # Excel format
 ./testplan "Project" "1.0" requirements.txt "" output.txt   # Text format
+./testplan "Project" "1.0" requirements.txt "" output.xlsx \
+  --publish jira --publish-url https://xray.example/api/import --publish-project DEMO
 ```
 
 ### What You Get Instantly

@@ -3,6 +3,7 @@ package com.testplan.generator;
 import com.testplan.model.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.testplan.config.AIConfig;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.regions.Region;
@@ -17,13 +18,14 @@ import java.util.ArrayList;
  * Creates comprehensive test cases with intelligent analysis
  */
 public class AITestCaseGenerator {
-    private BedrockRuntimeClient bedrockClient;
-    private ObjectMapper objectMapper;
-    private static final String MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0";
+    private final BedrockRuntimeClient aiClient;
+    private final ObjectMapper objectMapper;
+    private final AIConfig config;
     
     public AITestCaseGenerator() {
-        this.bedrockClient = BedrockRuntimeClient.builder()
-            .region(Region.US_EAST_1)
+        this.config = AIConfig.load();
+        this.aiClient = BedrockRuntimeClient.builder()
+            .region(Region.of(config.getRegion()))
             .credentialsProvider(DefaultCredentialsProvider.create())
             .build();
         this.objectMapper = new ObjectMapper();
@@ -186,11 +188,11 @@ public class AITestCaseGenerator {
         String requestBody = objectMapper.writeValueAsString(new AIRequest(prompt));
         
         InvokeModelRequest request = InvokeModelRequest.builder()
-            .modelId(MODEL_ID)
+            .modelId(config.getModelId())
             .body(SdkBytes.fromUtf8String(requestBody))
             .build();
             
-        InvokeModelResponse response = bedrockClient.invokeModel(request);
+        InvokeModelResponse response = aiClient.invokeModel(request);
         String responseBody = response.body().asUtf8String();
         
         JsonNode responseJson = objectMapper.readTree(responseBody);

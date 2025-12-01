@@ -1,5 +1,6 @@
 package com.testplan.parser;
 
+import com.testplan.config.AIConfig;
 import com.testplan.model.Requirement;
 import com.testplan.model.DesignComponent;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,7 +14,6 @@ import software.amazon.awssdk.services.bedrockruntime.model.InvokeModelRequest;
 import software.amazon.awssdk.services.bedrockruntime.model.InvokeModelResponse;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
@@ -23,30 +23,29 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * AI-powered document parser using AWS Bedrock
- * Can analyze any type of document and extract requirements and design components
+ * Generic cloud AI document parser. Defaults target AWS Bedrock but configured via ai.properties.
  */
-public class BedrockDocumentParser implements DocumentParser {
-    
-    private BedrockRuntimeClient bedrockClient;
-    private ObjectMapper objectMapper;
-    private static final String MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0";
-    private static final int MAX_AI_RETRIES = 2;
-    private static final long BASE_BACKOFF_MS = 600;
+public class CloudAIDocumentParser implements DocumentParser {
+    private final BedrockRuntimeClient aiClient;
+    private final ObjectMapper objectMapper;
+    private final AIConfig config;
+
     private static final Map<String, List<Requirement>> REQUIREMENT_CACHE = new ConcurrentHashMap<>();
     private static final Map<String, List<DesignComponent>> COMPONENT_CACHE = new ConcurrentHashMap<>();
-    
-    public BedrockDocumentParser() {
-        this.bedrockClient = BedrockRuntimeClient.builder()
-            .region(Region.US_EAST_1)
+
+    public CloudAIDocumentParser() {
+        this.config = AIConfig.load();
+        this.aiClient = BedrockRuntimeClient.builder()
+            .region(Region.of(config.getRegion()))
             .credentialsProvider(DefaultCredentialsProvider.create())
             .build();
         this.objectMapper = new ObjectMapper();
     }
-    
+
     private String reinforceJsonReminder(String basePrompt) {
         return basePrompt + "\n\nREMINDER: Previous response was invalid. Return ONLY a valid JSON array matching the schema. Do not include prose or explanations.";
     }
+
     private List<Requirement> parseRequirementsWithFallback(File file) {
         try {
             DocumentParser fallback = DocumentParserFactory.createParser(file, false);
@@ -56,7 +55,7 @@ public class BedrockDocumentParser implements DocumentParser {
             return new ArrayList<>();
         }
     }
-    
+
     private List<DesignComponent> parseComponentsWithFallback(File file) {
         try {
             DocumentParser fallback = DocumentParserFactory.createParser(file, false);
@@ -66,13 +65,13 @@ public class BedrockDocumentParser implements DocumentParser {
             return new ArrayList<>();
         }
     }
-    
+
     @Override
     public List<Requirement> parseRequirements(File file) {
         String cacheKey = cacheKeyFor(file);
         if (REQUIREMENT_CACHE.containsKey(cacheKey)) {
             System.out.println("   ♻️  Using cached AI requirements for " + file.getName());
-            return copyRequirements(REQUIREMENT_CACHE.get(cacheKey));
+            return new ArrayList<>(REQUIREMENT_CACHE.get(cacheKey));
         }
 
         try {
@@ -84,13 +83,12 @@ public class BedrockDocumentParser implements DocumentParser {
                 rememberFallback(file, fallback);
                 return fallback;
             }
-            // If AI succeeded but fallback can enrich, merge for completeness
             List<Requirement> merged = mergeRequirements(requirements, parseRequirementsWithFallback(file));
-            REQUIREMENT_CACHE.put(cacheKey, copyRequirements(merged));
+            REQUIREMENT_CACHE.put(cacheKey, new ArrayList<>(merged));
             DocumentParserFactory.rememberSuccessfulParser(file, this);
             return merged;
         } catch (Exception e) {
-            System.err.println("Error parsing requirements with Bedrock: " + e.getMessage());
+            System.err.println("Error parsing requirements with cloud AI: " + e.getMessage());
             if (isCredentialIssue(e)) {
                 System.err.println("   ⚠️  AI credentials unavailable or expired. Using non-AI parser for this run.");
             }
@@ -99,13 +97,13 @@ public class BedrockDocumentParser implements DocumentParser {
             return fallback;
         }
     }
-    
+
     @Override
     public List<DesignComponent> parseDesignComponents(File file) {
         String cacheKey = cacheKeyFor(file);
         if (COMPONENT_CACHE.containsKey(cacheKey)) {
             System.out.println("   ♻️  Using cached AI design components for " + file.getName());
-            return copyComponents(COMPONENT_CACHE.get(cacheKey));
+            return new ArrayList<>(COMPONENT_CACHE.get(cacheKey));
         }
 
         try {
@@ -118,11 +116,11 @@ public class BedrockDocumentParser implements DocumentParser {
                 return fallback;
             }
             List<DesignComponent> merged = mergeComponents(components, parseComponentsWithFallback(file));
-            COMPONENT_CACHE.put(cacheKey, copyComponents(merged));
+            COMPONENT_CACHE.put(cacheKey, new ArrayList<>(merged));
             DocumentParserFactory.rememberSuccessfulParser(file, this);
             return merged;
         } catch (Exception e) {
-            System.err.println("Error parsing design components with Bedrock: " + e.getMessage());
+            System.err.println("Error parsing design components with cloud AI: " + e.getMessage());
             if (isCredentialIssue(e)) {
                 System.err.println("   ⚠️  AI credentials unavailable or expired. Using non-AI parser for this run.");
             }
@@ -131,51 +129,40 @@ public class BedrockDocumentParser implements DocumentParser {
             return fallback;
         }
     }
-    
+
     @Override
     public boolean supports(File file) {
-        // Bedrock parser can handle any text-based document
         String name = file.getName().toLowerCase();
-        return name.endsWith(".txt") || name.endsWith(".md") || 
+        return name.endsWith(".txt") || name.endsWith(".md") ||
                name.endsWith(".doc") || name.endsWith(".docx") ||
                name.endsWith(".pdf");
     }
-    
-    /**
-     * Extract content from file based on file type
-     */
+
     private String extractContent(File file) throws Exception {
         String fileName = file.getName().toLowerCase();
-        
         if (fileName.endsWith(".pdf")) {
-            // Use PDFBox to extract text from PDF
             return extractTextFromPDF(file);
-        } else {
-            // For text files, read directly
-            return Files.readString(file.toPath());
         }
+        return Files.readString(file.toPath());
     }
-    
-    /**
-     * Extract text from PDF file using PDFBox
-     */
+
     private String extractTextFromPDF(File pdfFile) throws Exception {
-        try (org.apache.pdfbox.pdmodel.PDDocument document = 
+        try (org.apache.pdfbox.pdmodel.PDDocument document =
              org.apache.pdfbox.pdmodel.PDDocument.load(pdfFile)) {
-            org.apache.pdfbox.text.PDFTextStripper stripper = 
+            org.apache.pdfbox.text.PDFTextStripper stripper =
                 new org.apache.pdfbox.text.PDFTextStripper();
             return stripper.getText(document);
         }
     }
-    
+
     private List<Requirement> attemptRequirementExtraction(String content) {
         List<Requirement> requirements = new ArrayList<>();
         String basePrompt = buildRequirementsPrompt(content);
-        
-        for (int attempt = 1; attempt <= MAX_AI_RETRIES; attempt++) {
+
+        for (int attempt = 1; attempt <= config.getMaxRetries(); attempt++) {
             String prompt = attempt == 1 ? basePrompt : reinforceJsonReminder(basePrompt);
             try {
-                String response = invokeBedrockModel(prompt);
+                String response = invokeAIModel(prompt);
                 requirements = parseRequirementsFromAIResponse(response);
                 if (!requirements.isEmpty()) {
                     if (attempt > 1) {
@@ -187,21 +174,19 @@ public class BedrockDocumentParser implements DocumentParser {
             } catch (Exception e) {
                 System.err.println("   ⚠️  AI requirement extraction attempt " + attempt + " failed: " + e.getMessage());
             }
-
-            // Controlled backoff before retrying
             sleepBeforeRetry(attempt);
         }
         return new ArrayList<>();
     }
-    
+
     private List<DesignComponent> attemptComponentExtraction(String content) {
         List<DesignComponent> components = new ArrayList<>();
         String basePrompt = buildDesignPrompt(content);
-        
-        for (int attempt = 1; attempt <= MAX_AI_RETRIES; attempt++) {
+
+        for (int attempt = 1; attempt <= config.getMaxRetries(); attempt++) {
             String prompt = attempt == 1 ? basePrompt : reinforceJsonReminder(basePrompt);
             try {
-                String response = invokeBedrockModel(prompt);
+                String response = invokeAIModel(prompt);
                 components = parseDesignComponentsFromAIResponse(response);
                 if (!components.isEmpty()) {
                     if (attempt > 1) {
@@ -213,101 +198,93 @@ public class BedrockDocumentParser implements DocumentParser {
             } catch (Exception e) {
                 System.err.println("   ⚠️  AI component extraction attempt " + attempt + " failed: " + e.getMessage());
             }
-
-            // Controlled backoff before retrying
             sleepBeforeRetry(attempt);
         }
         return new ArrayList<>();
     }
-    
-  private String buildRequirementsPrompt(String documentContent) {
-    StringBuilder p = new StringBuilder();
 
-    p.append("You are a senior QA requirements engineer. Extract the smallest complete set of requirements that the document explicitly supports (cap at 40 items).\n\n");
+    private String buildRequirementsPrompt(String documentContent) {
+        StringBuilder p = new StringBuilder();
+        p.append("You are a senior QA requirements engineer. Extract the smallest complete set of requirements that the document explicitly supports (cap at 40 items).\n\n");
+        p.append("Guidelines:\n");
+        p.append("- Use only evidence from the document. When inferring, set \"inferred\": true and explain briefly in \"notes\".\n");
+        p.append("- Keep IDs sequential (REQ-001…). Deduplicate overlapping statements.\n");
+        p.append("- Priorities: Critical (system fails), High (core journeys), Medium (quality/reliability), Low (nice-to-have).\n");
+        p.append("- Categories: Functional, Performance, Security, Integration, UI/UX, Data, Operational.\n");
+        p.append("- Output must be valid JSON only—no prose, markdown, or comments.\n\n");
 
-    p.append("Guidelines:\n");
-    p.append("- Use only evidence from the document. When inferring, set \"inferred\": true and explain briefly in \"notes\".\n");
-    p.append("- Keep IDs sequential (REQ-001…). Deduplicate overlapping statements.\n");
-    p.append("- Priorities: Critical (system fails), High (core journeys), Medium (quality/reliability), Low (nice-to-have).\n");
-    p.append("- Categories: Functional, Performance, Security, Integration, UI/UX, Data, Operational.\n");
-    p.append("- Output must be valid JSON only—no prose, markdown, or comments.\n\n");
+        p.append("Return a JSON array where each object uses the following keys:\n");
+        p.append("{\n");
+        p.append("  \"id\": \"REQ-001\",\n");
+        p.append("  \"title\": \"<=80 char summary\",\n");
+        p.append("  \"description\": \"Full requirement statement with context\",\n");
+        p.append("  \"priority\": \"Critical|High|Medium|Low\",\n");
+        p.append("  \"category\": \"Functional|Performance|Security|Integration|UI/UX|Data|Operational\",\n");
+        p.append("  \"acceptanceCriteria\": [\"Specific, measurable, and testable clauses (2-4 entries)\"],\n");
+        p.append("  \"businessValue\": \"User or business impact\",\n");
+        p.append("  \"sourceEvidence\": [\"Quotes or section references\"],\n");
+        p.append("  \"inferred\": false,\n");
+        p.append("  \"notes\": \"Rationale when inferred or any assumptions\"\n");
+        p.append("}\n\n");
 
-    p.append("Return a JSON array where each object uses the following keys:\n");
-    p.append("{\n");
-    p.append("  \"id\": \"REQ-001\",\n");
-    p.append("  \"title\": \"<=80 char summary\",\n");
-    p.append("  \"description\": \"Full requirement statement with context\",\n");
-    p.append("  \"priority\": \"Critical|High|Medium|Low\",\n");
-    p.append("  \"category\": \"Functional|Performance|Security|Integration|UI/UX|Data|Operational\",\n");
-    p.append("  \"acceptanceCriteria\": [\"Specific, measurable, and testable clauses (2-4 entries)\"],\n");
-    p.append("  \"businessValue\": \"User or business impact\",\n");
-    p.append("  \"sourceEvidence\": [\"Quotes or section references\"],\n");
-    p.append("  \"inferred\": false,\n");
-    p.append("  \"notes\": \"Rationale when inferred or any assumptions\"\n");
-    p.append("}\n\n");
+        p.append("Return ONLY the JSON array (no trailing commas).\n\n");
+        p.append("DOCUMENT TO ANALYZE:\n");
+        p.append("=====================================\n");
+        p.append(documentContent);
+        p.append("\n=====================================\n");
 
-    p.append("Return ONLY the JSON array (no trailing commas).\n\n");
-    p.append("DOCUMENT TO ANALYZE:\n");
-    p.append("=====================================\n");
-    p.append(documentContent);
-    p.append("\n=====================================\n");
+        return p.toString();
+    }
 
-    return p.toString();
-}
+    private String buildDesignPrompt(String documentContent) {
+        StringBuilder p = new StringBuilder();
+        p.append("You are a software architect. Extract every distinct component mentioned in the document (max 150) using only supported evidence.\n\n");
+        p.append("Rules:\n");
+        p.append("- Stable IDs COMP-001..N ordered sequentially.\n");
+        p.append("- Types limited to: API, Service, UI, Database, Integration, Security, Infrastructure, External.\n");
+        p.append("- Dependencies must reference other component IDs; omit when unknown.\n");
+        p.append("- Output must be valid JSON only. No free-form text.\n\n");
 
-    
-   private String buildDesignPrompt(String documentContent) {
-    StringBuilder p = new StringBuilder();
-    p.append("You are a software architect. Extract every distinct component mentioned in the document (max 150) using only supported evidence.\n\n");
-    p.append("Rules:\n");
-    p.append("- Stable IDs COMP-001..N ordered sequentially.\n");
-    p.append("- Types limited to: API, Service, UI, Database, Integration, Security, Infrastructure, External.\n");
-    p.append("- Dependencies must reference other component IDs; omit when unknown.\n");
-    p.append("- Output must be valid JSON only. No free-form text.\n\n");
+        p.append("Each component object should contain:\n");
+        p.append("{\n");
+        p.append("  \"id\": \"COMP-001\",\n");
+        p.append("  \"name\": \"User Authentication Service\",\n");
+        p.append("  \"type\": \"API\",\n");
+        p.append("  \"description\": \"One-sentence summary of responsibility\",\n");
+        p.append("  \"interfaces\": [\"HTTPS POST /auth/login\", \"Kafka topic auth.events\"],\n");
+        p.append("  \"datastores\": [\"PostgreSQL user_db\"],\n");
+        p.append("  \"dependencies\": [\"COMP-003\"],\n");
+        p.append("  \"businessRules\": [\"Requires MFA for admin accounts\"],\n");
+        p.append("  \"nonFunctional\": \"Key SLA, throughput, or availability targets\",\n");
+        p.append("  \"security\": \"Notable auth/encryption constraints\",\n");
+        p.append("  \"evidence\": [\"Section or quote\"],\n");
+        p.append("  \"inferred\": false,\n");
+        p.append("  \"notes\": \"Short justification when inferred\"\n");
+        p.append("}\n\n");
 
-    p.append("Each component object should contain:\n");
-    p.append("{\n");
-    p.append("  \"id\": \"COMP-001\",\n");
-    p.append("  \"name\": \"User Authentication Service\",\n");
-    p.append("  \"type\": \"API\",\n");
-    p.append("  \"description\": \"One-sentence summary of responsibility\",\n");
-    p.append("  \"interfaces\": [\"HTTPS POST /auth/login\", \"Kafka topic auth.events\"],\n");
-    p.append("  \"datastores\": [\"PostgreSQL user_db\"],\n");
-    p.append("  \"dependencies\": [\"COMP-003\"],\n");
-    p.append("  \"businessRules\": [\"Requires MFA for admin accounts\"],\n");
-    p.append("  \"nonFunctional\": \"Key SLA, throughput, or availability targets\",\n");
-    p.append("  \"security\": \"Notable auth/encryption constraints\",\n");
-    p.append("  \"evidence\": [\"Section or quote\"],\n");
-    p.append("  \"inferred\": false,\n");
-    p.append("  \"notes\": \"Short justification when inferred\"\n");
-    p.append("}\n\n");
+        p.append("Return ONLY the JSON array.\n\n");
+        p.append("DOCUMENT TO ANALYZE:\n=====================================\n");
+        p.append(documentContent);
+        p.append("\n=====================================\n");
 
-    p.append("Return ONLY the JSON array.\n\n");
-    p.append("DOCUMENT TO ANALYZE:\n=====================================\n");
-    p.append(documentContent);
-    p.append("\n=====================================\n");
+        return p.toString();
+    }
 
-    return p.toString();
-}
+    private String invokeAIModel(String prompt) throws Exception {
+        String requestBody = objectMapper.writeValueAsString(new AIRequest(config.getModelId(), prompt));
 
-    
-    private String invokeBedrockModel(String prompt) throws Exception {
-        // Build the request payload for Claude
-        String requestBody = objectMapper.writeValueAsString(new ClaudeRequest(prompt));
-        
         InvokeModelRequest request = InvokeModelRequest.builder()
-            .modelId(MODEL_ID)
+            .modelId(config.getModelId())
             .body(SdkBytes.fromUtf8String(requestBody))
             .build();
-        
-        InvokeModelResponse response = bedrockClient.invokeModel(request);
+
+        InvokeModelResponse response = aiClient.invokeModel(request);
         String responseBody = response.body().asUtf8String();
-        
-        // Parse Claude's response
+
         JsonNode responseJson = objectMapper.readTree(responseBody);
         return responseJson.get("content").get(0).get("text").asText();
     }
-    
+
     private List<Requirement> parseRequirementsFromAIResponse(String aiResponse) {
         List<Requirement> requirements = new ArrayList<>();
 
@@ -317,7 +294,7 @@ public class BedrockDocumentParser implements DocumentParser {
             if (!requirementsJson.isArray()) {
                 return requirements;
             }
-            
+
             for (JsonNode reqNode : requirementsJson) {
                 if (!reqNode.hasNonNull("id") || !reqNode.hasNonNull("title")) {
                     continue;
@@ -328,23 +305,23 @@ public class BedrockDocumentParser implements DocumentParser {
                 req.setDescription(reqNode.path("description").asText(""));
                 req.setPriority(reqNode.path("priority").asText("Medium"));
                 req.setCategory(reqNode.path("category").asText("Functional"));
-                
+
                 JsonNode criteriaNode = reqNode.get("acceptanceCriteria");
                 if (criteriaNode != null && criteriaNode.isArray()) {
                     for (JsonNode criterion : criteriaNode) {
                         req.getAcceptanceCriteria().add(criterion.asText());
                     }
                 }
-                
+
                 requirements.add(req);
             }
         } catch (Exception e) {
             System.err.println("Error parsing AI response for requirements: " + e.getMessage());
         }
-        
+
         return requirements;
     }
-    
+
     private List<DesignComponent> parseDesignComponentsFromAIResponse(String aiResponse) {
         List<DesignComponent> components = new ArrayList<>();
 
@@ -354,7 +331,7 @@ public class BedrockDocumentParser implements DocumentParser {
             if (!componentsJson.isArray()) {
                 return components;
             }
-            
+
             for (JsonNode compNode : componentsJson) {
                 if (!compNode.hasNonNull("id") || !compNode.hasNonNull("name")) {
                     continue;
@@ -364,47 +341,47 @@ public class BedrockDocumentParser implements DocumentParser {
                 comp.setName(compNode.get("name").asText());
                 comp.setType(compNode.path("type").asText("Component"));
                 comp.setDescription(compNode.path("description").asText(""));
-                
+
                 JsonNode interfacesNode = compNode.get("interfaces");
                 if (interfacesNode != null && interfacesNode.isArray()) {
                     for (JsonNode interfaceNode : interfacesNode) {
                         comp.getInterfaces().add(interfaceNode.asText());
                     }
                 }
-                
+
                 JsonNode dependenciesNode = compNode.get("dependencies");
                 if (dependenciesNode != null && dependenciesNode.isArray()) {
                     for (JsonNode depNode : dependenciesNode) {
                         comp.getDependencies().add(depNode.asText());
                     }
                 }
-                
+
                 JsonNode rulesNode = compNode.get("businessRules");
                 if (rulesNode != null && rulesNode.isArray()) {
                     for (JsonNode ruleNode : rulesNode) {
                         comp.getBusinessRules().add(ruleNode.asText());
                     }
                 }
-                
+
                 components.add(comp);
             }
         } catch (Exception e) {
             System.err.println("Error parsing AI response for design components: " + e.getMessage());
         }
-        
+
         return components;
     }
-    
+
     private String sanitizeToJsonArray(String response) {
         if (response == null) {
             return "[]";
         }
 
         String cleaned = response
-            .replaceAll("^[^\\[]*", "") // drop leading prose
-            .replaceAll("[^\\]]*$", "") // drop trailing prose
-            .replaceAll(",\\s*]", "]") // remove trailing commas before closing array
-            .replaceAll("[\\u0000-\\u001F]", ""); // strip control characters
+            .replaceAll("^[^\\[]*", "")
+            .replaceAll("[^\\]]*$", "")
+            .replaceAll(",\\s*]", "]")
+            .replaceAll("[\\u0000-\\u001F]", "");
 
         if (!cleaned.trim().startsWith("[")) {
             return "[]";
@@ -416,9 +393,27 @@ public class BedrockDocumentParser implements DocumentParser {
         return cleaned.isEmpty() ? "[]" : cleaned;
     }
 
-    private void rememberFallback(File file, List<?> results) {
-        if (results != null && !results.isEmpty()) {
-            DocumentParserFactory.rememberSuccessfulParser(file, DocumentParserFactory.createParser(file, false));
+    private void sleepBeforeRetry(int attempt) {
+        long backoff = (long) (config.getBaseBackoffMs() * Math.pow(2, attempt - 1));
+        try {
+            Thread.sleep(backoff);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private String cacheKeyFor(File file) {
+        try {
+            byte[] data = Files.readAllBytes(file.toPath());
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(data);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return file.getAbsolutePath();
         }
     }
 
@@ -452,6 +447,12 @@ public class BedrockDocumentParser implements DocumentParser {
         return new ArrayList<>(merged.values());
     }
 
+    private void rememberFallback(File file, List<?> results) {
+        if (results != null && !results.isEmpty()) {
+            DocumentParserFactory.rememberSuccessfulParser(file, DocumentParserFactory.createParser(file, false));
+        }
+    }
+
     private boolean isCredentialIssue(Exception e) {
         if (e instanceof SdkClientException) {
             return true;
@@ -460,54 +461,20 @@ public class BedrockDocumentParser implements DocumentParser {
         return msg != null && msg.toLowerCase().contains("credential");
     }
 
-    private void sleepBeforeRetry(int attempt) {
-        long backoff = (long) (BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
-        try {
-            Thread.sleep(backoff);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private String cacheKeyFor(File file) {
-        try {
-            byte[] data = Files.readAllBytes(file.toPath());
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(data);
-            StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            return file.getAbsolutePath();
-        }
-    }
-
-    private List<Requirement> copyRequirements(List<Requirement> source) {
-        return new ArrayList<>(source);
-    }
-
-    private List<DesignComponent> copyComponents(List<DesignComponent> source) {
-        return new ArrayList<>(source);
-    }
-    
-    /**
-     * Request object for Claude API
-     */
-    private static class ClaudeRequest {
+    /** Request object for Claude-style APIs */
+    private static class AIRequest {
         public String anthropic_version = "bedrock-2023-05-31";
         public int max_tokens = 4000;
         public Message[] messages;
-        
-        public ClaudeRequest(String prompt) {
+
+        public AIRequest(String modelId, String prompt) {
             this.messages = new Message[]{new Message("user", prompt)};
         }
-        
+
         private static class Message {
             public String role;
             public String content;
-            
+
             public Message(String role, String content) {
                 this.role = role;
                 this.content = content;

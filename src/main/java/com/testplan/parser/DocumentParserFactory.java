@@ -33,13 +33,13 @@ public class DocumentParserFactory {
         }
 
         DocumentParser remembered = getRememberedParser(file);
-        if (remembered != null && (!useAI || !(remembered instanceof BedrockDocumentParser))) {
+        if (remembered != null && (!useAI || !(remembered instanceof CloudAIDocumentParser))) {
             return remembered;
         }
         
         // If AI is requested and cloud AI credentials are available, use AI parser
         if (useAI && isCloudAIConfigured()) {
-            return new BedrockDocumentParser(); // Cloud AI document parser
+            return new CloudAIDocumentParser(); // Cloud AI document parser
         }
         
         String fileName = file.getName().toLowerCase();
